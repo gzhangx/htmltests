@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Maze of Shadows</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#0a0a0f;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-start;min-height:100vh;
+  font-family:'Segoe UI',sans-serif;color:#ccc;padding:20px;
+  overflow-y:auto;
+}
+h1{color:#7faaff;margin-bottom:6px;font-size:1.5em;letter-spacing:2px}
+#info{display:flex;gap:24px;margin-bottom:12px;font-size:.9em;align-items:center;justify-content:center}
+#info strong{color:#7faaff}
+canvas{border:2px solid #2a2a4a;border-radius:6px;box-shadow:0 0 40px rgba(60,80,140,.3);display:block}
+#hint{margin-top:10px;font-size:.82em;color:#555;text-align:center}
+#msg{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  background:rgba(10,10,30,.95);border:2px solid #7faaff;
+  border-radius:12px;padding:40px 50px;text-align:center;display:none;z-index:10;
+}
+#msg h2{color:#7faaff;margin-bottom:10px}
+#msg p{color:#aaa;margin-bottom:18px}
+#msg button{background:#7faaff;color:#0a0a0f;border:none;padding:10px 30px;border-radius:6px;font-size:1em;cursor:pointer;font-weight:bold}
+#nb{background:#2a2a4a;color:#99a;border:1px solid #444;padding:5px 16px;border-radius:5px;font-size:.88em;cursor:pointer;margin-top:12px}
+#nb:hover{background:#3a3a5a;color:#fff}
+</style>
+</head>
+<body>
+<h1>⚔ MAZE OF SHADOWS ⚔</h1>
+<div id="info">
+  <span>Time: <strong id="t">0.0s</strong></span>
+  <span>Explored: <strong id="ex">0</strong>%</span>
+</div>
+<canvas id="cv"></canvas>
+<div id="hint">Hold WASD or Arrow Keys to move · Find the <span style="color:#ffcc44">★</span></div>
+<button id="nb" onclick="init()">New Maze</button>
+<div id="msg"><h2>🎉 Escaped!</h2><p id="mt"></p><button onclick="init()">Again</button></div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+const COLS = 31, ROWS = 21;
+const CELL = 24; 
+const SPEED = 2.5;
+const PR = Math.max(4, CELL * 0.28); 
+const FOV = Math.PI / 2; 
+const MAX_VISION = CELL * 8; 
+
+// Fixed value: 90 degrees per second converted to radians
+const ROTATION_SPEED = 90 * Math.PI / 180; 
+
+cv.width = COLS * CELL;
+cv.height = ROWS * CELL;
+
+let maze, px, py, startT, lastTime, won, explored;
+let keys = {};
+let angle = 0; 
+
+function init() {
+  won = false;
+  document.getElementById('msg').style.display = 'none';
+  
+  maze = Array(ROWS).fill().map(() => Array(COLS).fill(1));
+  explored = Array(ROWS).fill().map(() => Array(COLS).fill(false));
+
+  const stack = [];
+  const startX = 1, startY = 1;
+  maze[startY][startX] = 0;
+  stack.push([startX, startY]);
+
+  while (stack.length > 0) {
+    const [cx, cy] = stack[stack.length - 1];
+    const dirs = [[0, -2], [0, 2], [-2, 0], [2, 0]];
+    const neighbors = [];
+
+    for (const [dx, dy] of dirs) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx > 0 && nx < COLS - 1 && ny > 0 && ny < ROWS - 1 && maze[ny][nx] === 1) {
+        neighbors.push([nx, ny, dx, dy]);
+      }
+    }
+
+    if (neighbors.length > 0) {
+      const [nx, ny, dx, dy] = neighbors[Math.floor(Math.random() * neighbors.length)];
+      maze[cy + dy / 2][cx + dx / 2] = 0;
+      maze[ny][nx] = 0;
+      stack.push([nx, ny]);
+    } else {
+      stack.pop();
+    }
+  }
+
+  px = CELL * 1.5;
+  py = CELL * 1.5;
+  angle = 0; 
+  startT = performance.now();
+  lastTime = performance.now();
+  
+  updateLOS();
+}
+
+function update(dt) {
+  if (won) return;
+
+  let dx = 0, dy = 0;
+  if (keys['w'] || keys['arrowup']) dy -= SPEED;
+  if (keys['s'] || keys['arrowdown']) dy += SPEED;
+  if (keys['a'] || keys['arrowleft']) dx -= SPEED;
+  if (keys['d'] || keys['arrowright']) dx += SPEED;
+
+  if (dx !== 0 || dy !== 0) {
+    const targetAngle = Math.atan2(dy, dx);
+    let angleDiff = targetAngle - angle;
+
+    angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+
+    const maxRotationThisFrame = ROTATION_SPEED * dt;
+
+    if (Math.abs(angleDiff) <= maxRotationThisFrame) {
+      angle = targetAngle;
+    } else {
+      angle += Math.sign(angleDiff) * maxRotationThisFrame;
+    }
+  }
+
+  if (dx !== 0) {
+    px += dx;
+    if (hitsWall(px, py)) px -= dx;
+  }
+  if (dy !== 0) {
+    py += dy;
+    if (hitsWall(px, py)) py -= dy;
+  }
+
+  updateLOS();
+  checkWin();
+}
+
+function hitsWall(x, y) {
+  const currentCellX = Math.floor(x / CELL);
+  const currentCellY = Math.floor(y / CELL);
+
+  for (let row = currentCellY - 1; row <= currentCellY + 1; row++) {
+    for (let col = currentCellX - 1; col <= currentCellX + 1; col++) {
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) continue;
+      
+      if (maze[row][col] === 1) {
+        const closestX = Math.max(col * CELL, Math.min(x, (col + 1) * CELL));
+        const closestY = Math.max(row * CELL, Math.min(y, (row + 1) * CELL));
+        const distX = x - closestX;
+        const distY = y - closestY;
+        
+        if ((distX * distX + distY * distY) < (PR * PR)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function updateLOS() {
+  const rayCount = 120; 
+  const startAngle = angle - FOV / 2;
+  const angleStep = FOV / rayCount;
+
+  const pCellX = Math.floor(px / CELL);
+  const pCellY = Math.floor(py / CELL);
+  if (pCellX >= 0 && pCellX < COLS && pCellY >= 0 && pCellY < ROWS) {
+    explored[pCellY][pCellX] = true;
+  }
+
+  for (let i = 0; i <= rayCount; i++) {
+    const currentAngle = startAngle + i * angleStep;
+    const cos = Math.cos(currentAngle);
+    const sin = Math.sin(currentAngle);
+    
+    let distance = 0;
+    const stepSize = 4; 
+
+    while (distance < MAX_VISION) {
+      const rx = px + cos * distance;
+      const ry = py + sin * distance;
+      
+      const cx = Math.floor(rx / CELL);
+      const cy = Math.floor(ry / CELL);
+
+      if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS) break;
+
+      explored[cy][cx] = true;
+      if (maze[cy][cx] === 1) break;
+
+      distance += stepSize;
+    }
+  }
+
+  let totalWalkable = 0, seenWalkable = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (maze[r][c] === 0) {
+        totalWalkable++;
+        if (explored[r][c]) seenWalkable++;
+      }
+    }
+  }
+  document.getElementById('ex').innerText = Math.floor((seenWalkable / totalWalkable) * 100);
+}
+
+function checkWin() {
+  const goalX = (COLS - 2) * CELL + CELL / 2;
+  const goalY = (ROWS - 2) * CELL + CELL / 2;
+  
+  if (Math.hypot(px - goalX, py - goalY) < CELL * 0.5) {
+    won = true;
+    const finalTime = ((performance.now() - startT) / 1000).toFixed(1);
+    document.getElementById('mt').innerText = `You cleared the maze in ${finalTime}s!`;
+    document.getElementById('msg').style.display = 'block';
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#05050a';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  const goalCellX = COLS - 2;
+  const goalCellY = ROWS - 2;
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!explored[r][c]) continue;
+
+      if (maze[r][c] === 1) {
+        ctx.fillStyle = '#1e1e38';
+        ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+        ctx.strokeStyle = '#2a2a4a';
+        ctx.strokeRect(c * CELL, r * CELL, CELL, CELL);
+      } else if (r === goalCellY && c === goalCellX) {
+        ctx.save();
+        ctx.fillStyle = '#ffcc44';
+        ctx.font = `${CELL * 0.7}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ffcc44';
+        ctx.fillText('★', c * CELL + CELL / 2, r * CELL + CELL / 2 + 1);
+        ctx.restore();
+      }
+    }
+  }
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(127, 170, 255, 0.12)';
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  
+  const rayCount = 90;
+  const startAngle = angle - FOV / 2;
+  const angleStep = FOV / rayCount;
+
+  for (let i = 0; i <= rayCount; i++) {
+    const currentAngle = startAngle + i * angleStep;
+    const cos = Math.cos(currentAngle);
+    const sin = Math.sin(currentAngle);
+    
+    let distance = 0;
+    while (distance < MAX_VISION) {
+      const rx = px + cos * distance;
+      const ry = py + sin * distance;
+      const cx = Math.floor(rx / CELL);
+      const cy = Math.floor(ry / CELL);
+
+      if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS || maze[cy][cx] === 1) {
+        break;
+      }
+      distance += 4;
+    }
+    ctx.lineTo(px + cos * distance, py + sin * distance);
+  }
+  ctx.lineTo(px, py);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.fillStyle = '#7faaff';
+  ctx.shadowBlur = 8;
+  ctx.shadowColor = '#7faaff';
+  ctx.beginPath();
+  ctx.arc(px, py, PR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + Math.cos(angle) * (PR + 4), py + Math.sin(angle) * (PR + 4));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = (now - lastTime) / 1000; 
+  lastTime = now;
+
+  if (!won) {
+    document.getElementById('t').innerText = ((performance.now() - startT) / 1000).toFixed(1) + 's';
+  }
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+init();
+loop();
+</script>
+</body>
+</html>
