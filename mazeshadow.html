@@ -35,7 +35,7 @@ canvas{border:2px solid #2a2a4a;border-radius:6px;box-shadow:0 0 40px rgba(60,80
   <span>Explored: <strong id="ex">0</strong>%</span>
 </div>
 <canvas id="cv"></canvas>
-<div id="hint">Hold WASD or Arrow Keys to move · Find the <span style="color:#ffcc44">★</span></div>
+<div id="hint">WASD / Arrows to move · Q / E to look around · Find the <span style="color:#ffcc44">★</span></div>
 <button id="nb" onclick="init()">New Maze</button>
 <div id="msg"><h2>🎉 Escaped!</h2><p id="mt"></p><button onclick="init()">Again</button></div>
 
@@ -112,13 +112,17 @@ function update(dt) {
   if (keys['a'] || keys['arrowleft']) dx -= SPEED;
   if (keys['d'] || keys['arrowright']) dx += SPEED;
 
-  if (dx !== 0 || dy !== 0) {
+  const turningLeft = keys['q'];
+  const turningRight = keys['e'];
+  const maxRotationThisFrame = ROTATION_SPEED * dt;
+
+  if (turningLeft || turningRight) {
+    if (turningLeft) angle -= maxRotationThisFrame;
+    if (turningRight) angle += maxRotationThisFrame;
+  } else if (dx !== 0 || dy !== 0) {
     const targetAngle = Math.atan2(dy, dx);
     let angleDiff = targetAngle - angle;
-
     angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
-
-    const maxRotationThisFrame = ROTATION_SPEED * dt;
 
     if (Math.abs(angleDiff) <= maxRotationThisFrame) {
       angle = targetAngle;
@@ -312,8 +316,15 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+const GAME_KEYS = new Set(['w','a','s','d','q','e','arrowup','arrowdown','arrowleft','arrowright']);
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (GAME_KEYS.has(k)) e.preventDefault();
+});
+window.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+});
 
 init();
 loop();
