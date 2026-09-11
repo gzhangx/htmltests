@@ -24,6 +24,9 @@ canvas{border:2px solid #2a2a4a;border-radius:6px;box-shadow:0 0 40px rgba(60,80
 #msg h2{color:#7faaff;margin-bottom:10px}
 #msg p{color:#aaa;margin-bottom:18px}
 #msg button{background:#7faaff;color:#0a0a0f;border:none;padding:10px 30px;border-radius:6px;font-size:1em;cursor:pointer;font-weight:bold}
+#msg.lose{border-color:#ff4466}
+#msg.lose h2{color:#ff6688}
+#msg.lose button{background:#ff6688}
 #nb{background:#2a2a4a;color:#99a;border:1px solid #444;padding:5px 16px;border-radius:5px;font-size:.88em;cursor:pointer;margin-top:12px}
 #nb:hover{background:#3a3a5a;color:#fff}
 </style>
@@ -33,37 +36,43 @@ canvas{border:2px solid #2a2a4a;border-radius:6px;box-shadow:0 0 40px rgba(60,80
 <div id="info">
   <span>Time: <strong id="t">0.0s</strong></span>
   <span>Explored: <strong id="ex">0</strong>%</span>
+  <span>Hunters: <strong id="hunters">0</strong></span>
 </div>
 <canvas id="cv"></canvas>
-<div id="hint">WASD / Arrows to move · Q / E to look around · Find the <span style="color:#ffcc44">★</span></div>
+<div id="hint">WASD / Arrows to move · Q / E to look around · Stay out of a hunter's cone · Find the <span style="color:#ffcc44">★</span></div>
 <button id="nb" onclick="init()">New Maze</button>
-<div id="msg"><h2>🎉 Escaped!</h2><p id="mt"></p><button onclick="init()">Again</button></div>
+<div id="msg"><h2 id="mh">🎉 Escaped!</h2><p id="mt"></p><button onclick="init()">Again</button></div>
 
 <script>
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 
 const COLS = 31, ROWS = 21;
-const CELL = 24; 
-const SPEED = 2.5;
-const PR = Math.max(4, CELL * 0.28); 
-const FOV = Math.PI / 2; 
-const MAX_VISION = CELL * 8; 
-
-// Fixed value: 90 degrees per second converted to radians
-const ROTATION_SPEED = 90 * Math.PI / 180; 
+const CELL = 24;
+const SPEED = 150;
+const ENEMY_SPEED = 112;
+const PR = Math.max(4, CELL * 0.28);
+const ER = PR * 0.92;
+const FOV = Math.PI / 2;
+const MAX_VISION = CELL * 8;
+const ROTATION_SPEED = 240 * Math.PI / 180;
 
 cv.width = COLS * CELL;
 cv.height = ROWS * CELL;
 
-let maze, px, py, startT, lastTime, won, explored;
+let maze, px, py, startT, lastTime, won, lost, explored;
 let keys = {};
-let angle = 0; 
+let angle = 0;
+let enemies = [];
 
 function init() {
   won = false;
-  document.getElementById('msg').style.display = 'none';
-  
+  lost = false;
+  const msg = document.getElementById('msg');
+  msg.style.display = 'none';
+  msg.classList.remove('lose');
+  document.getElementById('mh').innerText = '🎉 Escaped!';
+
   maze = Array(ROWS).fill().map(() => Array(COLS).fill(1));
   explored = Array(ROWS).fill().map(() => Array(COLS).fill(false));
 
@@ -94,23 +103,192 @@ function init() {
     }
   }
 
+  carveOpenSpaces();
+
   px = CELL * 1.5;
   py = CELL * 1.5;
-  angle = 0; 
+  angle = 0;
   startT = performance.now();
   lastTime = performance.now();
-  
+
+  spawnEnemies();
   updateLOS();
 }
 
+function carveOpenSpaces() {
+  const rooms = 4 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < rooms; i++) {
+    const w = 3 + Math.floor(Math.random() * 3);
+    const h = 3 + Math.floor(Math.random() * 3);
+    const x = 1 + Math.floor(Math.random() * (COLS - 1 - w));
+    const y = 1 + Math.floor(Math.random() * (ROWS - 1 - h));
+    for (let r = y; r < y + h; r++) {
+      for (let c = x; c < x + w; c++) {
+        maze[r][c] = 0;
+      }
+    }
+  }
+
+  let knocked = 0;
+  const target = 14 + Math.floor(Math.random() * 10);
+  for (let tries = 0; tries < 500 && knocked < target; tries++) {
+    const c = 2 + Math.floor(Math.random() * (COLS - 4));
+    const r = 2 + Math.floor(Math.random() * (ROWS - 4));
+    if (maze[r][c] !== 1) continue;
+    const open =
+      (maze[r - 1][c] === 0 ? 1 : 0) +
+      (maze[r + 1][c] === 0 ? 1 : 0) +
+      (maze[r][c - 1] === 0 ? 1 : 0) +
+      (maze[r][c + 1] === 0 ? 1 : 0);
+    if (open >= 2) {
+      maze[r][c] = 0;
+      knocked++;
+    }
+  }
+}
+
+function spawnEnemies() {
+  enemies = [];
+  const spots = [];
+  for (let r = 1; r < ROWS - 1; r++) {
+    for (let c = 1; c < COLS - 1; c++) {
+      if (maze[r][c] !== 0) continue;
+      if (Math.abs(c - 1) + Math.abs(r - 1) < 10) continue;
+      spots.push([c, r]);
+    }
+  }
+  for (let i = spots.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [spots[i], spots[j]] = [spots[j], spots[i]];
+  }
+  const count = Math.min(3 + Math.floor(Math.random() * 3), spots.length);
+  for (let i = 0; i < count; i++) {
+    const [c, r] = spots[i];
+    enemies.push({
+      x: c * CELL + CELL / 2,
+      y: r * CELL + CELL / 2,
+      angle: facingFromCell(c, r),
+      alert: false
+    });
+  }
+  document.getElementById('hunters').innerText = enemies.length;
+}
+
+function facingFromCell(c, r) {
+  const dirs = [];
+  if (maze[r][c + 1] === 0) dirs.push(0);
+  if (maze[r + 1] && maze[r + 1][c] === 0) dirs.push(Math.PI / 2);
+  if (maze[r][c - 1] === 0) dirs.push(Math.PI);
+  if (maze[r - 1] && maze[r - 1][c] === 0) dirs.push(-Math.PI / 2);
+  return dirs.length ? dirs[Math.floor(Math.random() * dirs.length)] : 0;
+}
+
+function inVision(ox, oy, facing, tx, ty) {
+  const dx = tx - ox;
+  const dy = ty - oy;
+  const dist = Math.hypot(dx, dy);
+  if (dist < CELL * 0.7) return true;
+  const a = Math.atan2(dy, dx);
+  const diff = Math.atan2(Math.sin(a - facing), Math.cos(a - facing));
+  if (Math.abs(diff) > FOV / 2) return false;
+  return hasLOS(ox, oy, tx, ty);
+}
+
+function turnToward(current, target, dt) {
+  let diff = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  const maxRot = ROTATION_SPEED * dt;
+  if (Math.abs(diff) <= maxRot) return target;
+  return current + Math.sign(diff) * maxRot;
+}
+
+function nextStep(sc, sr, tc, tr) {
+  if (sc === tc && sr === tr) return null;
+  const q = [[sc, sr]];
+  const seen = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+  const prev = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  seen[sr][sc] = true;
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  while (q.length) {
+    const [c, r] = q.shift();
+    if (c === tc && r === tr) break;
+    for (const [dc, dr] of dirs) {
+      const nc = c + dc, nr = r + dr;
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+      if (seen[nr][nc] || maze[nr][nc] === 1) continue;
+      seen[nr][nc] = true;
+      prev[nr][nc] = [c, r];
+      q.push([nc, nr]);
+    }
+  }
+  if (!seen[tr][tc]) return null;
+
+  let c = tc, r = tr;
+  while (prev[r][c] && !(prev[r][c][0] === sc && prev[r][c][1] === sr)) {
+    [c, r] = prev[r][c];
+  }
+  return [c, r];
+}
+
+function moveEntity(ent, dx, dy, radius) {
+  if (dx !== 0) {
+    ent.x += dx;
+    if (hitsWall(ent.x, ent.y, radius)) ent.x -= dx;
+  }
+  if (dy !== 0) {
+    ent.y += dy;
+    if (hitsWall(ent.x, ent.y, radius)) ent.y -= dy;
+  }
+}
+
+function updateEnemies(dt) {
+  const pc = Math.floor(px / CELL);
+  const pr = Math.floor(py / CELL);
+
+  for (const e of enemies) {
+    e.alert = inVision(e.x, e.y, e.angle, px, py);
+
+    if (e.alert) {
+      e.angle = turnToward(e.angle, Math.atan2(py - e.y, px - e.x), dt);
+
+      const ec = Math.floor(e.x / CELL);
+      const erow = Math.floor(e.y / CELL);
+      const step = nextStep(ec, erow, pc, pr);
+      let tx = px, ty = py;
+      if (step) {
+        tx = step[0] * CELL + CELL / 2;
+        ty = step[1] * CELL + CELL / 2;
+      }
+      const dx = tx - e.x;
+      const dy = ty - e.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.5) {
+        const move = Math.min(ENEMY_SPEED * dt, dist);
+        moveEntity(e, (dx / dist) * move, (dy / dist) * move, ER);
+      }
+    }
+
+    if (Math.hypot(e.x - px, e.y - py) < PR + ER) {
+      lost = true;
+      const finalTime = ((performance.now() - startT) / 1000).toFixed(1);
+      document.getElementById('mh').innerText = 'Caught!';
+      document.getElementById('mt').innerText = `A hunter found you after ${finalTime}s.`;
+      const msg = document.getElementById('msg');
+      msg.classList.add('lose');
+      msg.style.display = 'block';
+      return;
+    }
+  }
+}
+
 function update(dt) {
-  if (won) return;
+  if (won || lost) return;
 
   let dx = 0, dy = 0;
-  if (keys['w'] || keys['arrowup']) dy -= SPEED;
-  if (keys['s'] || keys['arrowdown']) dy += SPEED;
-  if (keys['a'] || keys['arrowleft']) dx -= SPEED;
-  if (keys['d'] || keys['arrowright']) dx += SPEED;
+  if (keys['w'] || keys['arrowup']) dy -= SPEED * dt;
+  if (keys['s'] || keys['arrowdown']) dy += SPEED * dt;
+  if (keys['a'] || keys['arrowleft']) dx -= SPEED * dt;
+  if (keys['d'] || keys['arrowright']) dx += SPEED * dt;
 
   const turningLeft = keys['q'];
   const turningRight = keys['e'];
@@ -120,53 +298,100 @@ function update(dt) {
     if (turningLeft) angle -= maxRotationThisFrame;
     if (turningRight) angle += maxRotationThisFrame;
   } else if (dx !== 0 || dy !== 0) {
-    const targetAngle = Math.atan2(dy, dx);
-    let angleDiff = targetAngle - angle;
-    angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
-
-    if (Math.abs(angleDiff) <= maxRotationThisFrame) {
-      angle = targetAngle;
-    } else {
-      angle += Math.sign(angleDiff) * maxRotationThisFrame;
-    }
+    angle = turnToward(angle, Math.atan2(dy, dx), dt);
   }
 
   if (dx !== 0) {
     px += dx;
-    if (hitsWall(px, py)) px -= dx;
+    if (hitsWall(px, py, PR)) px -= dx;
   }
   if (dy !== 0) {
     py += dy;
-    if (hitsWall(px, py)) py -= dy;
+    if (hitsWall(px, py, PR)) py -= dy;
   }
 
+  updateEnemies(dt);
+  if (lost) return;
   updateLOS();
   checkWin();
 }
 
-function hitsWall(x, y) {
+function hitsWall(x, y, radius = PR) {
   const currentCellX = Math.floor(x / CELL);
   const currentCellY = Math.floor(y / CELL);
 
   for (let row = currentCellY - 1; row <= currentCellY + 1; row++) {
     for (let col = currentCellX - 1; col <= currentCellX + 1; col++) {
       if (row < 0 || row >= ROWS || col < 0 || col >= COLS) continue;
-      
+
       if (maze[row][col] === 1) {
         const closestX = Math.max(col * CELL, Math.min(x, (col + 1) * CELL));
         const closestY = Math.max(row * CELL, Math.min(y, (row + 1) * CELL));
         const distX = x - closestX;
         const distY = y - closestY;
-        
-        if ((distX * distX + distY * distY) < (PR * PR)) return true;
+
+        if ((distX * distX + distY * distY) < (radius * radius)) return true;
       }
     }
   }
   return false;
 }
 
+function hasLOS(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  if (dist > MAX_VISION) return false;
+  const steps = Math.max(1, Math.ceil(dist / 4));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = x1 + (x2 - x1) * t;
+    const y = y1 + (y2 - y1) * t;
+    const c = Math.floor(x / CELL);
+    const r = Math.floor(y / CELL);
+    if (c < 0 || c >= COLS || r < 0 || r >= ROWS || maze[r][c] === 1) return false;
+  }
+  return true;
+}
+
+function enemyVisible(e) {
+  return inVision(px, py, angle, e.x, e.y);
+}
+
+function drawVisionCone(x, y, facing, fill) {
+  ctx.save();
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+
+  const rayCount = 90;
+  const startAngle = facing - FOV / 2;
+  const angleStep = FOV / rayCount;
+
+  for (let i = 0; i <= rayCount; i++) {
+    const currentAngle = startAngle + i * angleStep;
+    const cos = Math.cos(currentAngle);
+    const sin = Math.sin(currentAngle);
+
+    let distance = 0;
+    while (distance < MAX_VISION) {
+      const rx = x + cos * distance;
+      const ry = y + sin * distance;
+      const cx = Math.floor(rx / CELL);
+      const cy = Math.floor(ry / CELL);
+
+      if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS || maze[cy][cx] === 1) {
+        break;
+      }
+      distance += 4;
+    }
+    ctx.lineTo(x + cos * distance, y + sin * distance);
+  }
+  ctx.lineTo(x, y);
+  ctx.fill();
+  ctx.restore();
+}
+
 function updateLOS() {
-  const rayCount = 120; 
+  const rayCount = 120;
   const startAngle = angle - FOV / 2;
   const angleStep = FOV / rayCount;
 
@@ -180,14 +405,14 @@ function updateLOS() {
     const currentAngle = startAngle + i * angleStep;
     const cos = Math.cos(currentAngle);
     const sin = Math.sin(currentAngle);
-    
+
     let distance = 0;
-    const stepSize = 4; 
+    const stepSize = 4;
 
     while (distance < MAX_VISION) {
       const rx = px + cos * distance;
       const ry = py + sin * distance;
-      
+
       const cx = Math.floor(rx / CELL);
       const cy = Math.floor(ry / CELL);
 
@@ -215,12 +440,15 @@ function updateLOS() {
 function checkWin() {
   const goalX = (COLS - 2) * CELL + CELL / 2;
   const goalY = (ROWS - 2) * CELL + CELL / 2;
-  
+
   if (Math.hypot(px - goalX, py - goalY) < CELL * 0.5) {
     won = true;
     const finalTime = ((performance.now() - startT) / 1000).toFixed(1);
+    document.getElementById('mh').innerText = '🎉 Escaped!';
     document.getElementById('mt').innerText = `You cleared the maze in ${finalTime}s!`;
-    document.getElementById('msg').style.display = 'block';
+    const msg = document.getElementById('msg');
+    msg.classList.remove('lose');
+    msg.style.display = 'block';
   }
 }
 
@@ -254,37 +482,26 @@ function draw() {
     }
   }
 
-  ctx.save();
-  ctx.fillStyle = 'rgba(127, 170, 255, 0.12)';
-  ctx.beginPath();
-  ctx.moveTo(px, py);
-  
-  const rayCount = 90;
-  const startAngle = angle - FOV / 2;
-  const angleStep = FOV / rayCount;
+  drawVisionCone(px, py, angle, 'rgba(127, 170, 255, 0.12)');
 
-  for (let i = 0; i <= rayCount; i++) {
-    const currentAngle = startAngle + i * angleStep;
-    const cos = Math.cos(currentAngle);
-    const sin = Math.sin(currentAngle);
-    
-    let distance = 0;
-    while (distance < MAX_VISION) {
-      const rx = px + cos * distance;
-      const ry = py + sin * distance;
-      const cx = Math.floor(rx / CELL);
-      const cy = Math.floor(ry / CELL);
-
-      if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS || maze[cy][cx] === 1) {
-        break;
-      }
-      distance += 4;
-    }
-    ctx.lineTo(px + cos * distance, py + sin * distance);
+  for (const e of enemies) {
+    if (!enemyVisible(e)) continue;
+    drawVisionCone(e.x, e.y, e.angle, e.alert ? 'rgba(255, 68, 102, 0.22)' : 'rgba(255, 68, 102, 0.10)');
+    ctx.save();
+    ctx.fillStyle = e.alert ? '#ff6688' : '#ff4466';
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = '#ff2244';
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, ER, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(e.angle) * (ER + 4), e.y + Math.sin(e.angle) * (ER + 4));
+    ctx.stroke();
+    ctx.restore();
   }
-  ctx.lineTo(px, py);
-  ctx.fill();
-  ctx.restore();
 
   ctx.save();
   ctx.fillStyle = '#7faaff';
@@ -305,10 +522,10 @@ function draw() {
 
 function loop() {
   const now = performance.now();
-  const dt = (now - lastTime) / 1000; 
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
-  if (!won) {
+  if (!won && !lost) {
     document.getElementById('t').innerText = ((performance.now() - startT) / 1000).toFixed(1) + 's';
   }
   update(dt);
