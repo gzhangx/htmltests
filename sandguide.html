@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Sand Guide</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#0c0b0a;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-start;min-height:100vh;
+  font-family:'Segoe UI',sans-serif;color:#cbbfa8;padding:20px;
+  overflow-y:auto;
+}
+h1{color:#e6b84d;margin-bottom:6px;font-size:1.5em;letter-spacing:3px}
+#info{display:flex;gap:22px;margin-bottom:12px;font-size:.9em;align-items:center;justify-content:center;flex-wrap:wrap}
+#info strong{color:#e6b84d}
+canvas{
+  border:2px solid #3a3228;border-radius:6px;
+  box-shadow:0 0 40px rgba(180,120,40,.18);display:block;
+  touch-action:none;cursor:crosshair;background:#12100e;
+}
+#hint{margin-top:10px;font-size:.82em;color:#6a5e4e;text-align:center;max-width:640px;line-height:1.45}
+#bar{
+  width:540px;max-width:100%;height:10px;background:#1a1714;border:1px solid #3a3228;
+  border-radius:6px;margin:10px 0 0;overflow:hidden;
+}
+#fill{height:100%;width:0;background:linear-gradient(90deg,#c45c26,#e6b84d);transition:width .12s}
+.row{display:flex;gap:10px;margin-top:12px}
+button{
+  background:#3a3228;color:#e6d3a8;border:1px solid #5a4c3a;
+  padding:8px 20px;border-radius:6px;font-size:.92em;cursor:pointer;font-weight:bold;
+}
+button:hover{background:#4a4034;color:#fff}
+button.primary{background:#e6b84d;color:#1a140c;border-color:#e6b84d}
+button.primary:hover{background:#f0c85a}
+button:disabled{opacity:.45;cursor:default}
+#msg{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  background:rgba(18,16,14,.96);border:2px solid #e6b84d;
+  border-radius:12px;padding:40px 50px;text-align:center;display:none;z-index:10;
+}
+#msg h2{color:#e6b84d;margin-bottom:10px}
+#msg p{color:#aaa;margin-bottom:18px}
+#msg.lose{border-color:#c45c26}
+#msg.lose h2{color:#e08a5a}
+#msg button{background:#e6b84d;color:#1a140c;border:none;padding:10px 30px}
+</style>
+</head>
+<body>
+<h1>SAND GUIDE</h1>
+<div id="info">
+  <span>In cup: <strong id="got">0</strong> / <span id="need">0</span></span>
+  <span>Sand left: <strong id="left">0</strong></span>
+</div>
+<canvas id="cv"></canvas>
+<div id="bar"><div id="fill"></div></div>
+<div id="hint">Draw ramps to funnel the stream into the cup · Left drag draw · Right drag erase</div>
+<div class="row">
+  <button class="primary" id="startBtn" onclick="startStream()">Start sand</button>
+  <button onclick="reset(false)">Clear ink</button>
+  <button onclick="reset(true)">New cup</button>
+</div>
+<div id="msg"><h2 id="mh">You did it</h2><p id="mt"></p><button onclick="reset(true)">Again</button></div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+
+const COLS = 180, ROWS = 220, CELL = 3;
+const EMPTY = 0, SAND = 1, WALL = 2, CUP = 3;
+const BRUSH = 2;
+const BUDGET = 3400;
+const SPAWN_RATE = 7;
+const SAND_COLORS = ['#d4a017', '#e6b84d', '#c4922a', '#f0c85a'];
+
+cv.width = COLS * CELL;
+cv.height = ROWS * CELL;
+
+let grid, cup, spawned, collected, target, running, won, lost, settled;
+let drawing = false, erasing = false, lastGx = -1, lastGy = -1;
+
+function makeCup() {
+  const t = 3;
+  const w = 32 + Math.floor(Math.random() * 10);
+  const h = 26 + Math.floor(Math.random() * 8);
+  const x = 8 + Math.floor(Math.random() * (COLS - w - 16));
+  const y = ROWS - h - 4;
+  return { x, y, w, h, t };
+}
+
+function stampCup() {
+  for (let y = cup.y; y < cup.y + cup.h; y++) {
+    for (let x = cup.x; x < cup.x + cup.w; x++) {
+      const side = x < cup.x + cup.t || x >= cup.x + cup.w - cup.t;
+      const floor = y >= cup.y + cup.h - cup.t;
+      if (side || floor) grid[y][x] = CUP;
+    }
+  }
+}
+
+function reset(newCup) {
+  won = false;
+  lost = false;
+  running = false;
+  settled = 0;
+  spawned = 0;
+  collected = 0;
+  document.getElementById('msg').style.display = 'none';
+  document.getElementById('msg').classList.remove('lose');
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('startBtn').innerText = 'Start sand';
+
+  const keepInk = !newCup && grid;
+  const old = keepInk ? grid.map(row => row.slice()) : null;
+  if (newCup || !cup) cup = makeCup();
+  target = Math.floor(BUDGET * 0.48);
+  document.getElementById('need').innerText = target;
+
+  grid = Array.from({ length: ROWS }, () => Array(COLS).fill(EMPTY));
+  if (old) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (old[y][x] === WALL) grid[y][x] = WALL;
+      }
+    }
+  }
+  stampCup();
+  updateHud();
+}
+
+function startStream() {
+  if (won || lost) return;
+  running = true;
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('startBtn').innerText = 'Pouring…';
+}
+
+function cellAt(px, py) {
+  return [
+    Math.max(0, Math.min(COLS - 1, Math.floor(px / CELL))),
+    Math.max(0, Math.min(ROWS - 1, Math.floor(py / CELL)))
+  ];
+}
+
+function paintDisk(cx, cy, erase) {
+  const r2 = BRUSH * BRUSH;
+  for (let dy = -BRUSH; dy <= BRUSH; dy++) {
+    for (let dx = -BRUSH; dx <= BRUSH; dx++) {
+      if (dx * dx + dy * dy > r2) continue;
+      const x = cx + dx, y = cy + dy;
+      if (x < 0 || x >= COLS || y < 0 || y >= ROWS) continue;
+      if (grid[y][x] === CUP) continue;
+      if (erase) {
+        if (grid[y][x] === WALL) grid[y][x] = EMPTY;
+      } else {
+        grid[y][x] = WALL;
+      }
+    }
+  }
+}
+
+function paintLine(x0, y0, x1, y1, erase) {
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const steps = Math.max(1, Math.ceil(dist));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    paintDisk(
+      Math.round(x0 + (x1 - x0) * t),
+      Math.round(y0 + (y1 - y0) * t),
+      erase
+    );
+  }
+}
+
+function tryMove(x, y, nx, ny) {
+  if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return false;
+  if (grid[ny][nx] !== EMPTY) return false;
+  grid[ny][nx] = SAND;
+  grid[y][x] = EMPTY;
+  return true;
+}
+
+function stepSand() {
+  let moved = 0;
+  const leftFirst = Math.random() < 0.5;
+  for (let y = ROWS - 2; y >= 0; y--) {
+    for (let i = 0; i < COLS; i++) {
+      const x = leftFirst ? i : COLS - 1 - i;
+      if (grid[y][x] !== SAND) continue;
+      if (tryMove(x, y, x, y + 1)) { moved++; continue; }
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      if (tryMove(x, y, x + dir, y + 1) || tryMove(x, y, x - dir, y + 1)) moved++;
+    }
+  }
+  return moved;
+}
+
+function spawnSand() {
+  if (!running || spawned >= BUDGET) return;
+  const spout = (COLS / 2) | 0;
+  for (let i = 0; i < SPAWN_RATE && spawned < BUDGET; i++) {
+    const x = spout + ((Math.random() * 5) | 0) - 2;
+    const y = 2 + ((Math.random() * 2) | 0);
+    if (x >= 0 && x < COLS && grid[y][x] === EMPTY) {
+      grid[y][x] = SAND;
+      spawned++;
+    } else if (grid[y][spout] === EMPTY) {
+      grid[y][spout] = SAND;
+      spawned++;
+    }
+  }
+}
+
+function countCollected() {
+  let n = 0;
+  for (let y = cup.y; y < cup.y + cup.h - cup.t; y++) {
+    for (let x = cup.x + cup.t; x < cup.x + cup.w - cup.t; x++) {
+      if (grid[y][x] === SAND) n++;
+    }
+  }
+  return n;
+}
+
+function updateHud() {
+  document.getElementById('got').innerText = collected;
+  document.getElementById('left').innerText = Math.max(0, BUDGET - spawned);
+  const pct = Math.min(100, (collected / target) * 100);
+  document.getElementById('fill').style.width = pct + '%';
+}
+
+function finish(ok) {
+  running = false;
+  const msg = document.getElementById('msg');
+  if (ok) {
+    won = true;
+    msg.classList.remove('lose');
+    document.getElementById('mh').innerText = 'Cup is full';
+    document.getElementById('mt').innerText = `${collected} grains made it in.`;
+  } else {
+    lost = true;
+    msg.classList.add('lose');
+    document.getElementById('mh').innerText = 'Not enough';
+    document.getElementById('mt').innerText = `${collected} / ${target} grains in the cup.`;
+  }
+  msg.style.display = 'block';
+}
+
+function drawSpout() {
+  const sx = (COLS / 2) * CELL;
+  ctx.fillStyle = '#4a4034';
+  ctx.fillRect(sx - 10, 0, 20, 8);
+  ctx.fillStyle = '#2a241c';
+  ctx.fillRect(sx - 6, 8, 12, 6);
+}
+
+function render() {
+  ctx.fillStyle = '#12100e';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const v = grid[y][x];
+      if (v === EMPTY) continue;
+      if (v === SAND) {
+        ctx.fillStyle = SAND_COLORS[(x * 13 + y * 7) & 3];
+      } else if (v === WALL) {
+        ctx.fillStyle = '#7a8aa3';
+      } else {
+        ctx.fillStyle = (y >= cup.y + cup.h - cup.t) ? '#a34418' : '#c45c26';
+      }
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+  drawSpout();
+}
+
+function loop() {
+  spawnSand();
+  const moved = stepSand() + stepSand() + stepSand();
+  collected = countCollected();
+  updateHud();
+
+  if (!won && !lost) {
+    if (collected >= target) finish(true);
+    else if (spawned >= BUDGET) {
+      if (moved === 0) settled++;
+      else settled = 0;
+      if (settled > 40) finish(false);
+    }
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+
+function pointerCell(e) {
+  const r = cv.getBoundingClientRect();
+  return cellAt(
+    (e.clientX - r.left) * (cv.width / r.width),
+    (e.clientY - r.top) * (cv.height / r.height)
+  );
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  cv.setPointerCapture(e.pointerId);
+  erasing = e.button === 2 || e.shiftKey;
+  drawing = true;
+  const [x, y] = pointerCell(e);
+  lastGx = x; lastGy = y;
+  paintDisk(x, y, erasing);
+});
+cv.addEventListener('pointermove', e => {
+  if (!drawing) return;
+  const [x, y] = pointerCell(e);
+  paintLine(lastGx, lastGy, x, y, erasing || e.shiftKey);
+  lastGx = x; lastGy = y;
+});
+cv.addEventListener('pointerup', () => { drawing = false; erasing = false; });
+cv.addEventListener('pointercancel', () => { drawing = false; erasing = false; });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+reset(true);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
