@@ -81,11 +81,15 @@ let drawing = false, erasing = false, lastGx = -1, lastGy = -1;
 
 function makeCup() {
   const t = 3;
-  const w = 32 + Math.floor(Math.random() * 10);
-  const h = 26 + Math.floor(Math.random() * 8);
-  const x = 8 + Math.floor(Math.random() * (COLS - w - 16));
-  const y = ROWS - h - 4;
+  const w = 58 + Math.floor(Math.random() * 10);
+  const h = 50 + Math.floor(Math.random() * 8);
+  const x = 10 + Math.floor(Math.random() * (COLS - w - 20));
+  const y = ROWS - h - 6;
   return { x, y, w, h, t };
+}
+
+function cupCapacity() {
+  return (cup.w - 2 * cup.t) * (cup.h - cup.t);
 }
 
 function stampCup() {
@@ -113,7 +117,7 @@ function reset(newCup) {
   const keepInk = !newCup && grid;
   const old = keepInk ? grid.map(row => row.slice()) : null;
   if (newCup || !cup) cup = makeCup();
-  target = Math.floor(BUDGET * 0.48);
+  target = Math.floor(cupCapacity() * 0.5);
   document.getElementById('need').innerText = target;
 
   grid = Array.from({ length: ROWS }, () => Array(COLS).fill(EMPTY));
