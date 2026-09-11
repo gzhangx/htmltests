@@ -34,14 +34,15 @@ canvas{border:2px solid #2a2a4a;border-radius:6px;box-shadow:0 0 40px rgba(60,80
 <body>
 <h1>⚔ MAZE OF SHADOWS ⚔</h1>
 <div id="info">
+  <span>Level: <strong id="lv">1</strong>/2</span>
   <span>Time: <strong id="t">0.0s</strong></span>
   <span>Explored: <strong id="ex">0</strong>%</span>
   <span>Hunters: <strong id="hunters">0</strong></span>
 </div>
 <canvas id="cv"></canvas>
-<div id="hint">WASD / Arrows to move · Q / E to look around · Stay out of a hunter's cone · Find the <span style="color:#ffcc44">★</span></div>
-<button id="nb" onclick="init()">New Maze</button>
-<div id="msg"><h2 id="mh">🎉 Escaped!</h2><p id="mt"></p><button onclick="init()">Again</button></div>
+<div id="hint">WASD / Arrows to move · Q / E to look around · Find the <span style="color:#ffcc44">★</span></div>
+<button id="nb" onclick="newGame()">New Maze</button>
+<div id="msg"><h2 id="mh">🎉 Escaped!</h2><p id="mt"></p><button id="mb" onclick="newGame()">Again</button></div>
 
 <script>
 const cv = document.getElementById('cv');
@@ -50,12 +51,12 @@ const ctx = cv.getContext('2d');
 const COLS = 31, ROWS = 21;
 const CELL = 24;
 const SPEED = 150;
-const ENEMY_SPEED = 112;
+const ENEMY_SPEED = 70;
 const PR = Math.max(4, CELL * 0.28);
 const ER = PR * 0.92;
 const FOV = Math.PI / 2;
 const MAX_VISION = CELL * 8;
-const ROTATION_SPEED = 240 * Math.PI / 180;
+const ROTATION_SPEED = 450 * Math.PI / 180;
 
 cv.width = COLS * CELL;
 cv.height = ROWS * CELL;
@@ -64,14 +65,23 @@ let maze, px, py, startT, lastTime, won, lost, explored;
 let keys = {};
 let angle = 0;
 let enemies = [];
+let level = 1;
 
-function init() {
+function newGame() {
+  level = 1;
+  startLevel();
+}
+
+function startLevel() {
   won = false;
   lost = false;
   const msg = document.getElementById('msg');
   msg.style.display = 'none';
   msg.classList.remove('lose');
   document.getElementById('mh').innerText = '🎉 Escaped!';
+  document.getElementById('mb').innerText = 'Again';
+  document.getElementById('mb').onclick = newGame;
+  document.getElementById('lv').innerText = level;
 
   maze = Array(ROWS).fill().map(() => Array(COLS).fill(1));
   explored = Array(ROWS).fill().map(() => Array(COLS).fill(false));
@@ -103,16 +113,30 @@ function init() {
     }
   }
 
-  carveOpenSpaces();
-
   px = CELL * 1.5;
   py = CELL * 1.5;
   angle = 0;
   startT = performance.now();
   lastTime = performance.now();
 
-  spawnEnemies();
+  if (level >= 2) {
+    carveOpenSpaces();
+    spawnEnemies();
+  } else {
+    enemies = [];
+    document.getElementById('hunters').innerText = '0';
+  }
+  updateHint();
   updateLOS();
+}
+
+function updateHint() {
+  const hint = document.getElementById('hint');
+  if (level >= 2) {
+    hint.innerHTML = 'WASD / Arrows to move · Q / E to look around · Stay out of a hunter\'s cone · Find the <span style="color:#ffcc44">★</span>';
+  } else {
+    hint.innerHTML = 'WASD / Arrows to move · Q / E to look around · Find the <span style="color:#ffcc44">★</span>';
+  }
 }
 
 function carveOpenSpaces() {
@@ -168,7 +192,8 @@ function spawnEnemies() {
       x: c * CELL + CELL / 2,
       y: r * CELL + CELL / 2,
       angle: facingFromCell(c, r),
-      alert: false
+      alert: false,
+      lastSeen: null
     });
   }
   document.getElementById('hunters').innerText = enemies.length;
@@ -181,6 +206,23 @@ function facingFromCell(c, r) {
   if (maze[r][c - 1] === 0) dirs.push(Math.PI);
   if (maze[r - 1] && maze[r - 1][c] === 0) dirs.push(-Math.PI / 2);
   return dirs.length ? dirs[Math.floor(Math.random() * dirs.length)] : 0;
+}
+
+function cellsNear(x, y, fn) {
+  const c = Math.floor(x / CELL);
+  const r = Math.floor(y / CELL);
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const nc = c + dc, nr = r + dr;
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) fn(nc, nr);
+    }
+  }
+}
+
+function inProximity(x1, y1, x2, y2) {
+  const c1 = Math.floor(x1 / CELL), r1 = Math.floor(y1 / CELL);
+  const c2 = Math.floor(x2 / CELL), r2 = Math.floor(y2 / CELL);
+  return Math.max(Math.abs(c1 - c2), Math.abs(r1 - r2)) <= 1;
 }
 
 function inVision(ox, oy, facing, tx, ty) {
@@ -246,7 +288,7 @@ function updateEnemies(dt) {
   const pr = Math.floor(py / CELL);
 
   for (const e of enemies) {
-    e.alert = inVision(e.x, e.y, e.angle, px, py);
+    e.alert = inVision(e.x, e.y, e.angle, px, py) || inProximity(e.x, e.y, px, py);
 
     if (e.alert) {
       e.angle = turnToward(e.angle, Math.atan2(py - e.y, px - e.x), dt);
@@ -268,6 +310,10 @@ function updateEnemies(dt) {
       }
     }
 
+    if (playerSeesEnemy(e)) {
+      e.lastSeen = { x: e.x, y: e.y };
+    }
+
     if (Math.hypot(e.x - px, e.y - py) < PR + ER) {
       lost = true;
       const finalTime = ((performance.now() - startT) / 1000).toFixed(1);
@@ -276,6 +322,8 @@ function updateEnemies(dt) {
       const msg = document.getElementById('msg');
       msg.classList.add('lose');
       msg.style.display = 'block';
+      document.getElementById('mb').innerText = 'Retry';
+      document.getElementById('mb').onclick = startLevel;
       return;
     }
   }
@@ -352,8 +400,8 @@ function hasLOS(x1, y1, x2, y2) {
   return true;
 }
 
-function enemyVisible(e) {
-  return inVision(px, py, angle, e.x, e.y);
+function playerSeesEnemy(e) {
+  return inVision(px, py, angle, e.x, e.y) || inProximity(px, py, e.x, e.y);
 }
 
 function drawVisionCone(x, y, facing, fill) {
@@ -425,6 +473,11 @@ function updateLOS() {
     }
   }
 
+  cellsNear(px, py, (c, r) => { explored[r][c] = true; });
+  for (const e of enemies) {
+    if (playerSeesEnemy(e)) cellsNear(e.x, e.y, (c, r) => { explored[r][c] = true; });
+  }
+
   let totalWalkable = 0, seenWalkable = 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -444,11 +497,20 @@ function checkWin() {
   if (Math.hypot(px - goalX, py - goalY) < CELL * 0.5) {
     won = true;
     const finalTime = ((performance.now() - startT) / 1000).toFixed(1);
-    document.getElementById('mh').innerText = '🎉 Escaped!';
-    document.getElementById('mt').innerText = `You cleared the maze in ${finalTime}s!`;
     const msg = document.getElementById('msg');
     msg.classList.remove('lose');
     msg.style.display = 'block';
+    if (level === 1) {
+      document.getElementById('mh').innerText = 'Level 1 cleared';
+      document.getElementById('mt').innerText = `The maze opens up… and something else is in here. ${finalTime}s`;
+      document.getElementById('mb').innerText = 'Continue';
+      document.getElementById('mb').onclick = () => { level = 2; startLevel(); };
+    } else {
+      document.getElementById('mh').innerText = '🎉 Escaped!';
+      document.getElementById('mt').innerText = `You cleared both levels. Level 2 in ${finalTime}s!`;
+      document.getElementById('mb').innerText = 'Again';
+      document.getElementById('mb').onclick = newGame;
+    }
   }
 }
 
@@ -458,26 +520,46 @@ function draw() {
 
   const goalCellX = COLS - 2;
   const goalCellY = ROWS - 2;
+  const pc = Math.floor(px / CELL);
+  const pr = Math.floor(py / CELL);
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      if (!explored[r][c]) continue;
+      const nearPlayer = Math.max(Math.abs(c - pc), Math.abs(r - pr)) <= 1;
+      let nearBot = false;
+      for (const e of enemies) {
+        if (!playerSeesEnemy(e)) continue;
+        if (Math.max(Math.abs(c - Math.floor(e.x / CELL)), Math.abs(r - Math.floor(e.y / CELL))) <= 1) {
+          nearBot = true;
+          break;
+        }
+      }
+      if (!explored[r][c] && !nearPlayer && !nearBot) continue;
 
       if (maze[r][c] === 1) {
-        ctx.fillStyle = '#1e1e38';
+        ctx.fillStyle = nearPlayer || nearBot ? '#2a2a48' : '#1e1e38';
         ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
         ctx.strokeStyle = '#2a2a4a';
         ctx.strokeRect(c * CELL, r * CELL, CELL, CELL);
-      } else if (r === goalCellY && c === goalCellX) {
-        ctx.save();
-        ctx.fillStyle = '#ffcc44';
-        ctx.font = `${CELL * 0.7}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = '#ffcc44';
-        ctx.fillText('★', c * CELL + CELL / 2, r * CELL + CELL / 2 + 1);
-        ctx.restore();
+      } else {
+        if (nearPlayer) {
+          ctx.fillStyle = 'rgba(127, 170, 255, 0.10)';
+          ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+        } else if (nearBot) {
+          ctx.fillStyle = 'rgba(255, 68, 102, 0.10)';
+          ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+        }
+        if (r === goalCellY && c === goalCellX) {
+          ctx.save();
+          ctx.fillStyle = '#ffcc44';
+          ctx.font = `${CELL * 0.7}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = '#ffcc44';
+          ctx.fillText('★', c * CELL + CELL / 2, r * CELL + CELL / 2 + 1);
+          ctx.restore();
+        }
       }
     }
   }
@@ -485,7 +567,26 @@ function draw() {
   drawVisionCone(px, py, angle, 'rgba(127, 170, 255, 0.12)');
 
   for (const e of enemies) {
-    if (!enemyVisible(e)) continue;
+    if (e.lastSeen && !playerSeesEnemy(e)) {
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.strokeStyle = '#ff6688';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.arc(e.lastSeen.x, e.lastSeen.y, ER + 2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ff4466';
+      ctx.beginPath();
+      ctx.arc(e.lastSeen.x, e.lastSeen.y, ER * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  for (const e of enemies) {
+    if (!playerSeesEnemy(e)) continue;
     drawVisionCone(e.x, e.y, e.angle, e.alert ? 'rgba(255, 68, 102, 0.22)' : 'rgba(255, 68, 102, 0.10)');
     ctx.save();
     ctx.fillStyle = e.alert ? '#ff6688' : '#ff4466';
@@ -543,7 +644,7 @@ window.addEventListener('keyup', e => {
   keys[e.key.toLowerCase()] = false;
 });
 
-init();
+newGame();
 loop();
 </script>
 </body>
