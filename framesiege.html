@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Frame Siege</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#0d1118;display:flex;flex-direction:column;align-items:center;
+  min-height:100vh;font-family:'Segoe UI',sans-serif;color:#c5d0dc;padding:16px 12px 24px;
+}
+h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
+#hud{
+  display:flex;gap:18px;flex-wrap:wrap;align-items:center;justify-content:center;
+  margin-bottom:8px;font-size:.88em;
+}
+#hud strong{color:#f0c36a}
+#hud .blue{color:#7ec8ff}
+#hud .red{color:#ff7a6e}
+canvas{
+  border:2px solid #2a3548;border-radius:8px;display:block;
+  box-shadow:0 0 40px rgba(80,120,180,.18);background:#15202e;
+  touch-action:none;
+}
+#tools{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+button{
+  background:#243044;color:#d5deea;border:1px solid #3d4d66;border-radius:6px;
+  padding:7px 14px;font-weight:700;cursor:pointer;font-size:.86em;
+}
+button:hover{background:#2e3d55}
+button.on{background:#3d5a80;border-color:#7ec8ff;color:#fff}
+button.fireon{background:#7a3a32;border-color:#ff7a6e;color:#fff}
+button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
+#hint{margin-top:8px;color:#6d7b8d;font-size:.8em;text-align:center;max-width:1100px}
+#msg{
+  position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(8,10,16,.72);z-index:10;
+}
+#msg .card{
+  background:#151c28;border:2px solid #f0c36a;border-radius:14px;
+  padding:36px 42px;text-align:center;max-width:420px;
+}
+#msg.lose .card{border-color:#ff7a6e}
+#msg h2{color:#f0c36a;margin-bottom:10px}
+#msg.lose h2{color:#ff7a6e}
+#msg p{color:#9aa8b8;margin-bottom:18px;line-height:1.45}
+</style>
+</head>
+<body>
+<h1>FRAME SIEGE</h1>
+<div id="hud">
+  <span>Metal <strong id="metal">0</strong></span>
+  <span>Income <strong id="inc">0</strong>/s</span>
+  <span>Your core <strong class="blue" id="php">0</strong></span>
+  <span>Enemy core <strong class="red" id="ehp">0</strong></span>
+</div>
+<canvas id="cv"></canvas>
+<div id="tools">
+  <button id="t-brace" class="on" onclick="setTool('brace')">1 Brace</button>
+  <button id="t-cannon" onclick="setTool('cannon')">2 Cannon</button>
+  <button id="t-mortar" onclick="setTool('mortar')">3 Mortar</button>
+  <button id="t-reactor" onclick="setTool('reactor')">4 Reactor</button>
+  <button id="t-armor" onclick="setTool('armor')">5 Armor</button>
+  <button id="t-fire" onclick="setTool('fire')">F Fire</button>
+  <button onclick="newGame()">New battle</button>
+</div>
+<div id="hint">Build frames from your fort, fill rooms with weapons, then switch to Fire and click to shoot. Destroy their core — or drop it.</div>
+<div id="msg"><div class="card"><h2 id="mh"></h2><p id="mt"></p><button class="primary" onclick="newGame()">Fight again</button></div></div>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = 1100, H = 620;
+cv.width = W; cv.height = H;
+
+const CELL = 34;
+const GX0 = 42;
+const GROUND = 498;
+const MAXGX = 29, MAXGY = 12;
+const P = 0, E = 1;
+const COSTS = { brace: 6, braceD: 8, cannon: 48, mortar: 52, reactor: 36, armor: 18 };
+const HP = { beam: 32, armor: 78, core: 260, cannon: 58, mortar: 54, reactor: 48 };
+const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+
+let nodes, beams, devices, shots, fx, metal, tool, hover, over;
+let mx = 0, my = 0, playing, aiClock, aiShot;
+
+function nk(gx, gy) { return gx + ',' + gy; }
+function parseN(k) { const [a, b] = k.split(',').map(Number); return { gx: a, gy: b }; }
+function bk(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+function pos(gx, gy) { return [GX0 + gx * CELL, GROUND - gy * CELL]; }
+function snap(x, y) {
+  const gx = Math.round((x - GX0) / CELL);
+  const gy = Math.round((GROUND - y) / CELL);
+  return [gx, gy];
+}
+function groundAt(x) {
+  const u = Math.max(0, 1 - Math.abs(x - W / 2) / 240);
+  return GROUND + 8 + 78 * u * u;
+}
+
+function newGame() {
+  document.getElementById('msg').style.display = 'none';
+  document.getElementById('msg').classList.remove('lose');
+  nodes = new Map();
+  beams = new Map();
+  devices = [];
+  shots = [];
+  fx = [];
+  metal = [140, 140];
+  tool = 'brace';
+  hover = null;
+  over = false;
+  playing = true;
+  aiClock = 1.2;
+  aiShot = 2.2;
+  setTool('brace');
+  seedFort(P, 2);
+  seedFort(E, 24);
+}
+
+function seedFort(team, ox) {
+  for (let gy = 0; gy <= 1; gy++) {
+    for (let gx = ox; gx <= ox + 2; gx++) addNode(gx, gy, team, gy === 0);
+  }
+  for (let gy = 0; gy <= 1; gy++) {
+    for (let gx = ox; gx <= ox + 2; gx++) {
+      if (gx < ox + 2) addBeam(nk(gx, gy), nk(gx + 1, gy), team);
+      if (gy < 1) addBeam(nk(gx, gy), nk(gx, gy + 1), team);
+    }
+  }
+  addDevice('core', ox, 0, team);
+}
+
+function addNode(gx, gy, team, anchored) {
+  const k = nk(gx, gy);
+  if (nodes.has(k)) return nodes.get(k);
+  const n = { gx, gy, team, anchored: !!anchored };
+  nodes.set(k, n);
+  return n;
+}
+
+function addBeam(a, b, team, armored) {
+  const k = bk(a, b);
+  if (beams.has(k)) return beams.get(k);
+  const pa = parseN(a), pb = parseN(b);
+  const diag = pa.gx !== pb.gx && pa.gy !== pb.gy;
+  const hp = armored ? HP.armor : HP.beam;
+  const beam = { a, b, team, hp, max: hp, armored: !!armored, diag };
+  beams.set(k, beam);
+  return beam;
+}
+
+function addDevice(type, gx, gy, team) {
+  devices.push({
+    type, gx, gy, team,
+    hp: HP[type], max: HP[type],
+    cd: 0, angle: team === P ? 0 : Math.PI
+  });
+}
+
+function canNode(gx, gy) {
+  if (gx < 0 || gx > MAXGX || gy < 0 || gy > MAXGY) return false;
+  const [x, y] = pos(gx, gy);
+  const g = groundAt(x);
+  if (y > g - 1) return false;
+  if (gy === 0 && g - y > 22) return false;
+  return true;
+}
+
+function neighbors(gx, gy) {
+  return DIRS.map(([dx, dy]) => [gx + dx, gy + dy]).filter(([x, y]) => canNode(x, y));
+}
+
+function roomReady(gx, gy, team) {
+  const ks = [nk(gx, gy), nk(gx + 1, gy), nk(gx, gy + 1), nk(gx + 1, gy + 1)];
+  if (ks.some(k => !nodes.has(k) || nodes.get(k).team !== team)) return false;
+  const sides = [
+    bk(ks[0], ks[1]), bk(ks[0], ks[2]), bk(ks[1], ks[3]), bk(ks[2], ks[3])
+  ];
+  return sides.every(k => beams.has(k) && beams.get(k).team === team);
+}
+
+function roomTaken(gx, gy) {
+  return devices.some(d => d.gx === gx && d.gy === gy);
+}
+
+function roomsAt(gx, gy, team) {
+  return [[gx, gy], [gx - 1, gy], [gx, gy - 1], [gx - 1, gy - 1]]
+    .filter(([x, y]) => roomReady(x, y, team) && !roomTaken(x, y));
+}
+
+function deviceCenter(d) {
+  const [x1, y1] = pos(d.gx, d.gy);
+  const [x2, y2] = pos(d.gx + 1, d.gy + 1);
+  return [(x1 + x2) / 2, (y1 + y2) / 2];
+}
+
+function income(team) {
+  return 7 + devices.filter(d => d.team === team && d.type === 'reactor').length * 9;
+}
+
+function coreOf(team) {
+  return devices.find(d => d.team === team && d.type === 'core');
+}
+
+function connected(team) {
+  const seen = new Set();
+  const q = [];
+  for (const [k, n] of nodes) {
+    if (n.team === team && (n.anchored || n.gy === 0)) { seen.add(k); q.push(k); }
+  }
+  while (q.length) {
+    const cur = q.pop();
+    for (const [, b] of beams) {
+      if (b.team !== team) continue;
+      const o = b.a === cur ? b.b : b.b === cur ? b.a : null;
+      if (o && !seen.has(o) && nodes.has(o) && nodes.get(o).team === team) {
+        seen.add(o); q.push(o);
+      }
+    }
+  }
+  return seen;
+}
+
+function collapse() {
+  for (const team of [P, E]) {
+    const live = connected(team);
+    for (const [k, n] of [...nodes]) {
+      if (n.team !== team) continue;
+      if (!live.has(k)) {
+        const [x, y] = pos(n.gx, n.gy);
+        burst(x, y, n.team === P ? '#c4a36a' : '#d09080', 6);
+        nodes.delete(k);
+      }
+    }
+    for (const [k, b] of [...beams]) {
+      if (b.team !== team) continue;
+      if (!nodes.has(b.a) || !nodes.has(b.b)) beams.delete(k);
+    }
+    for (let i = devices.length - 1; i >= 0; i--) {
+      const d = devices[i];
+      if (d.team !== team) continue;
+      if (!roomReady(d.gx, d.gy, team)) {
+        const [x, y] = deviceCenter(d);
+        burst(x, y, '#ffaa66', 10);
+        if (d.type === 'core') endGame(team !== P);
+        devices.splice(i, 1);
+      }
+    }
+  }
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 40 + Math.random() * 120;
+    fx.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: 0.35 + Math.random() * 0.3, color, r: 2 + Math.random() * 3 });
+  }
+}
+
+function explode(x, y, radius, dmg, owner) {
+  burst(x, y, '#ffcc66', 12);
+  burst(x, y, '#ff6622', 8);
+  const hit = (px, py, hpObj, isCore) => {
+    const dist = Math.hypot(px - x, py - y);
+    if (dist > radius) return;
+    const fall = 1 - dist / radius;
+    hpObj.hp -= dmg * (isCore ? 0.75 : 1) * (0.45 + 0.55 * fall);
+  };
+  for (const [, b] of beams) {
+    if (b.team === owner) continue;
+    const pa = parseN(b.a), pb = parseN(b.b);
+    const [ax, ay] = pos(pa.gx, pa.gy);
+    const [bx, by] = pos(pb.gx, pb.gy);
+    const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
+    const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+    hit(px, py, b, false);
+  }
+  for (const d of devices) {
+    if (d.team === owner) continue;
+    const [cx, cy] = deviceCenter(d);
+    hit(cx, cy, d, d.type === 'core');
+  }
+  for (const [k, b] of [...beams]) if (b.hp <= 0) { beams.delete(k); }
+  for (let i = devices.length - 1; i >= 0; i--) {
+    const d = devices[i];
+    if (d.hp <= 0) {
+      const [cx, cy] = deviceCenter(d);
+      burst(cx, cy, '#ffa070', 14);
+      if (d.type === 'core') endGame(d.team !== P);
+      devices.splice(i, 1);
+    }
+  }
+  collapse();
+}
+
+function tryBrace(gx, gy, team) {
+  if (!canNode(gx, gy)) return false;
+  const dest = nk(gx, gy);
+  if (nodes.has(dest) && nodes.get(dest).team !== team) return false;
+  let best = null, bestD = 99;
+  for (const [nx, ny] of neighbors(gx, gy)) {
+    const k = nk(nx, ny);
+    const n = nodes.get(k);
+    if (!n || n.team !== team) continue;
+    const d = Math.hypot(nx - gx, ny - gy);
+    if (d < bestD && !beams.has(bk(k, dest))) { bestD = d; best = k; }
+  }
+  if (!best) return false;
+  const diag = parseN(best).gx !== gx && parseN(best).gy !== gy;
+  const cost = diag ? COSTS.braceD : COSTS.brace;
+  if (metal[team] < cost) return false;
+  metal[team] -= cost;
+  addNode(gx, gy, team, gy === 0);
+  addBeam(best, dest, team);
+  return true;
+}
+
+function tryArmor(gx, gy, team) {
+  const dest = nk(gx, gy);
+  let target = null;
+  for (const [nx, ny] of neighbors(gx, gy)) {
+    const k = nk(nx, ny);
+    const id = bk(k, dest);
+    const b = beams.get(id);
+    if (b && b.team === team && !b.armored) {
+      target = b; break;
+    }
+  }
+  if (!target || metal[team] < COSTS.armor) return false;
+  metal[team] -= COSTS.armor;
+  target.armored = true;
+  target.max = HP.armor;
+  target.hp = HP.armor;
+  return true;
+}
+
+function tryDevice(type, gx, gy, team) {
+  if (type === 'core') return false;
+  const spots = roomsAt(gx, gy, team);
+  if (!spots.length || metal[team] < COSTS[type]) return false;
+  metal[team] -= COSTS[type];
+  addDevice(type, spots[0][0], spots[0][1], team);
+  return true;
+}
+
+function fireAt(team, tx, ty) {
+  for (const d of devices) {
+    if (d.team !== team || (d.type !== 'cannon' && d.type !== 'mortar')) continue;
+    if (d.cd > 0) continue;
+    const [x, y] = deviceCenter(d);
+    d.angle = Math.atan2(ty - y, tx - x);
+    const mortar = d.type === 'mortar';
+    const spd = mortar ? 340 : 640;
+    shots.push({
+      x, y,
+      vx: Math.cos(d.angle) * spd,
+      vy: Math.sin(d.angle) * spd,
+      g: mortar ? 520 : 360,
+      r: mortar ? 5 : 3.2,
+      dmg: mortar ? 40 : 24,
+      splash: mortar ? 42 : 24,
+      team, life: 4
+    });
+    d.cd = mortar ? 2.35 : 1.35;
+    burst(x + Math.cos(d.angle) * 16, y + Math.sin(d.angle) * 16, '#ffe8a0', 4);
+  }
+}
+
+function endGame(playerWon) {
+  if (over) return;
+  over = true;
+  playing = false;
+  const msg = document.getElementById('msg');
+  msg.style.display = 'flex';
+  if (playerWon) {
+    msg.classList.remove('lose');
+    document.getElementById('mh').innerText = 'Fort down';
+    document.getElementById('mt').innerText = 'Their core is rubble. Your frames still stand.';
+  } else {
+    msg.classList.add('lose');
+    document.getElementById('mh').innerText = 'Core destroyed';
+    document.getElementById('mt').innerText = 'The enemy brought your fort down. Rebuild and try again.';
+  }
+}
+
+function setTool(t) {
+  tool = t;
+  for (const id of ['brace', 'cannon', 'mortar', 'reactor', 'armor', 'fire']) {
+    const el = document.getElementById('t-' + id);
+    el.classList.toggle('on', t === id && t !== 'fire');
+    el.classList.toggle('fireon', t === 'fire' && id === 'fire');
+  }
+  const hints = {
+    brace: 'Click a grid point next to your fort to extend wooden bracing.',
+    cannon: 'Click a complete square room to mount a direct-fire cannon.',
+    mortar: 'Click a complete square room to mount an arcing mortar.',
+    reactor: 'Click a complete square room for a reactor — extra metal income.',
+    armor: 'Click a brace to plate it. Armored struts take far more punishment.',
+    fire: 'Click the battlefield. Ready guns fire toward that point — aim above distant targets.'
+  };
+  document.getElementById('hint').innerText = hints[t];
+}
+
+function aiThink(dt) {
+  aiClock -= dt;
+  aiShot -= dt;
+  if (aiShot <= 0) {
+    aiShot = 1.8 + Math.random() * 0.8;
+    const core = coreOf(P);
+    if (core) {
+      const [cx, cy] = deviceCenter(core);
+      fireAt(E, cx + (Math.random() - 0.5) * 50, cy - 40 - Math.random() * 70);
+    }
+  }
+  if (aiClock > 0) return;
+  aiClock = 0.55 + Math.random() * 0.5;
+
+  const rooms = [];
+  for (let gy = 0; gy < MAXGY; gy++) {
+    for (let gx = 0; gx < MAXGX; gx++) {
+      if (roomReady(gx, gy, E) && !roomTaken(gx, gy)) rooms.push([gx, gy]);
+    }
+  }
+  const guns = devices.filter(d => d.team === E && (d.type === 'cannon' || d.type === 'mortar')).length;
+  const reactors = devices.filter(d => d.team === E && d.type === 'reactor').length;
+  rooms.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+
+  if (reactors < 2 && metal[E] >= COSTS.reactor && rooms.length) {
+    if (tryDevice('reactor', rooms[0][0], rooms[0][1], E)) return;
+  }
+  if (guns < 4 && rooms.length) {
+    const type = guns % 2 === 0 ? 'cannon' : 'mortar';
+    if (metal[E] >= COSTS[type] && tryDevice(type, rooms[0][0], rooms[0][1], E)) return;
+  }
+
+  const owned = [...nodes.values()].filter(n => n.team === E);
+  owned.sort((a, b) => a.gx - b.gx || b.gy - a.gy);
+  for (const n of owned) {
+    const opts = neighbors(n.gx, n.gy)
+      .map(([x, y]) => ({ x, y, score: (12 - x) + y * 1.4 + Math.random() }))
+      .filter(o => canNode(o.x, o.y) && (!nodes.has(nk(o.x, o.y)) || nodes.get(nk(o.x, o.y)).team === E))
+      .sort((a, b) => b.score - a.score);
+    for (const o of opts) {
+      if (tryBrace(o.x, o.y, E)) return;
+    }
+  }
+}
+
+function update(dt) {
+  if (!playing) {
+    updateFx(dt);
+    return;
+  }
+  metal[P] += income(P) * dt;
+  metal[E] += income(E) * dt;
+  for (const d of devices) d.cd = Math.max(0, d.cd - dt);
+
+  for (const s of shots) {
+    s.vy += s.g * dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.life -= dt;
+  }
+  for (let i = shots.length - 1; i >= 0; i--) {
+    const s = shots[i];
+    let hit = s.y >= groundAt(s.x) || s.x < 0 || s.x > W || s.y < -40 || s.life <= 0;
+    if (!hit) {
+      for (const [, b] of beams) {
+        if (b.team === s.team) continue;
+        const pa = parseN(b.a), pb = parseN(b.b);
+        const [ax, ay] = pos(pa.gx, pa.gy);
+        const [bx, by] = pos(pb.gx, pb.gy);
+        const t = Math.max(0, Math.min(1, ((s.x - ax) * (bx - ax) + (s.y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
+        if (Math.hypot(s.x - (ax + (bx - ax) * t), s.y - (ay + (by - ay) * t)) < s.r + 4) { hit = true; break; }
+      }
+    }
+    if (!hit) {
+      for (const d of devices) {
+        if (d.team === s.team) continue;
+        const [cx, cy] = deviceCenter(d);
+        if (Math.hypot(s.x - cx, s.y - cy) < 16) { hit = true; break; }
+      }
+    }
+    if (hit) {
+      explode(s.x, s.y, s.splash, s.dmg, s.team);
+      shots.splice(i, 1);
+    }
+  }
+  aiThink(dt);
+  updateFx(dt);
+  const pc = coreOf(P), ec = coreOf(E);
+  document.getElementById('metal').innerText = Math.floor(metal[P]);
+  document.getElementById('inc').innerText = income(P);
+  document.getElementById('php').innerText = pc ? Math.max(0, Math.ceil(pc.hp)) : 0;
+  document.getElementById('ehp').innerText = ec ? Math.max(0, Math.ceil(ec.hp)) : 0;
+}
+
+function updateFx(dt) {
+  for (const p of fx) {
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 280 * dt; p.life -= dt;
+  }
+  fx = fx.filter(p => p.life > 0);
+}
+
+function drawTerrain() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#141c28');
+  sky.addColorStop(1, '#243044');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  ctx.lineTo(0, groundAt(0));
+  for (let x = 0; x <= W; x += 6) ctx.lineTo(x, groundAt(x));
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  const dirt = ctx.createLinearGradient(0, GROUND, 0, H);
+  dirt.addColorStop(0, '#3d5a32');
+  dirt.addColorStop(0.08, '#5a4630');
+  dirt.addColorStop(1, '#2a2018');
+  ctx.fillStyle = dirt;
+  ctx.fill();
+  ctx.strokeStyle = '#6a8a4a';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, groundAt(0));
+  for (let x = 0; x <= W; x += 6) ctx.lineTo(x, groundAt(x));
+  ctx.stroke();
+}
+
+function drawBeams() {
+  for (const b of beams.values()) {
+    const pa = parseN(b.a), pb = parseN(b.b);
+    const [ax, ay] = pos(pa.gx, pa.gy);
+    const [bx, by] = pos(pb.gx, pb.gy);
+    const t = Math.max(0, b.hp / b.max);
+    ctx.lineCap = 'round';
+    ctx.lineWidth = b.armored ? 8 : 5.5;
+    ctx.strokeStyle = b.armored
+      ? `rgba(${90 + 40 * t},${100 + 40 * t},${120 + 40 * t},0.95)`
+      : b.team === P
+        ? `rgba(${160 + 40 * t},${120 * t + 40},${40},0.95)`
+        : `rgba(${180},${80 * t + 40},${50},0.95)`;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+  for (const n of nodes.values()) {
+    const [x, y] = pos(n.gx, n.gy);
+    ctx.fillStyle = n.team === P ? '#d8c090' : '#d09078';
+    ctx.beginPath(); ctx.arc(x, y, 4.2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawDevices() {
+  for (const d of devices) {
+    const [x, y] = deviceCenter(d);
+    ctx.save();
+    ctx.translate(x, y);
+    if (d.type === 'core') {
+      ctx.fillStyle = d.team === P ? '#3a6ea8' : '#a83a3a';
+      ctx.strokeStyle = d.team === P ? '#7ec8ff' : '#ff7a6e';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI / 3 * i - Math.PI / 6;
+        i ? ctx.lineTo(Math.cos(a) * 15, Math.sin(a) * 15) : ctx.moveTo(Math.cos(a) * 15, Math.sin(a) * 15);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#f0c36a';
+      ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    } else if (d.type === 'reactor') {
+      ctx.fillStyle = '#2a4a3a';
+      ctx.strokeStyle = '#5fd68a';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-13, -13, 26, 26);
+      ctx.strokeRect(-13, -13, 26, 26);
+      ctx.strokeStyle = '#b6ffd0';
+      ctx.beginPath(); ctx.moveTo(-2, -8); ctx.lineTo(4, 0); ctx.lineTo(-1, 0); ctx.lineTo(3, 8); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#2a2e36';
+      ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = d.type === 'mortar' ? '#c4a36a' : '#9aa8b8';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(d.angle) * (d.type === 'mortar' ? 20 : 24), Math.sin(d.angle) * (d.type === 'mortar' ? 20 : 24));
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (d.hp < d.max * 0.98) {
+      const [cx, cy] = deviceCenter(d);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(cx - 14, cy - 24, 28, 4);
+      ctx.fillStyle = d.hp / d.max > 0.4 ? '#5fd68a' : '#ff7a6e';
+      ctx.fillRect(cx - 14, cy - 24, 28 * Math.max(0, d.hp / d.max), 4);
+    }
+  }
+}
+
+function drawGhost() {
+  if (!playing || tool === 'fire' || !hover) return;
+  const [gx, gy] = hover;
+  if (tool === 'brace') {
+    if (!canNode(gx, gy)) return;
+    let best = null, bestD = 99;
+    for (const [nx, ny] of neighbors(gx, gy)) {
+      const k = nk(nx, ny);
+      const n = nodes.get(k);
+      if (!n || n.team !== P) continue;
+      const d = Math.hypot(nx - gx, ny - gy);
+      if (d < bestD) { bestD = d; best = [nx, ny]; }
+    }
+    if (!best) return;
+    const [ax, ay] = pos(best[0], best[1]);
+    const [bx, by] = pos(gx, gy);
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = 'rgba(126,200,255,.7)';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(126,200,255,.5)';
+    ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
+  } else if (tool === 'cannon' || tool === 'mortar' || tool === 'reactor') {
+    const spots = roomsAt(gx, gy, P);
+    if (!spots.length) return;
+    const [sx, sy] = spots[0];
+    const [x1, y1] = pos(sx, sy);
+    const [x2, y2] = pos(sx + 1, sy + 1);
+    ctx.fillStyle = 'rgba(126,200,255,.18)';
+    ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), CELL, CELL);
+  }
+}
+
+function drawShots() {
+  for (const s of shots) {
+    ctx.fillStyle = s.team === P ? '#ffe08a' : '#ff9a7a';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const p of fx) {
+    ctx.globalAlpha = Math.max(0, p.life * 2);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function render() {
+  drawTerrain();
+  drawBeams();
+  drawGhost();
+  drawDevices();
+  drawShots();
+  if (tool === 'fire' && playing) {
+    ctx.strokeStyle = 'rgba(255,122,110,.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(mx - 8, my); ctx.lineTo(mx + 8, my);
+    ctx.moveTo(mx, my - 8); ctx.lineTo(mx, my + 8); ctx.stroke();
+  }
+}
+
+function onClick() {
+  if (!playing) return;
+  const [gx, gy] = snap(mx, my);
+  hover = [gx, gy];
+  if (tool === 'fire') { fireAt(P, mx, my); return; }
+  if (tool === 'brace') tryBrace(gx, gy, P);
+  else if (tool === 'armor') tryArmor(gx, gy, P);
+  else tryDevice(tool, gx, gy, P);
+}
+
+cv.addEventListener('pointermove', e => {
+  const r = cv.getBoundingClientRect();
+  mx = (e.clientX - r.left) * (W / r.width);
+  my = (e.clientY - r.top) * (H / r.height);
+  hover = snap(mx, my);
+  if (tool === 'fire') {
+    for (const d of devices) {
+      if (d.team === P && (d.type === 'cannon' || d.type === 'mortar')) {
+        const [x, y] = deviceCenter(d);
+        d.angle = Math.atan2(my - y, mx - x);
+      }
+    }
+  }
+});
+cv.addEventListener('pointerdown', e => { if (e.button === 0) onClick(); });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === '1') setTool('brace');
+  if (k === '2') setTool('cannon');
+  if (k === '3') setTool('mortar');
+  if (k === '4') setTool('reactor');
+  if (k === '5') setTool('armor');
+  if (k === 'f') setTool('fire');
+});
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+newGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
