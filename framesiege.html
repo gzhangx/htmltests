@@ -106,7 +106,7 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
   <button id="t-fire" onclick="setTool('fire')">F Fire</button>
   <button onclick="newGame()">New battle</button>
 </div>
-<div id="hint">Mine gold veins for metal. Generators make power for drills and guns. A floor one level up falls unless a post (or a one-span joist) holds it.</div>
+<div id="hint">Your core makes a trickle of metal even with no veins. Miners drill gold faster. Generators power drills and guns. A floor one level up falls unless a post (or a one-span joist) holds it.</div>
 <div id="msg"><div class="card"><h2 id="mh"></h2><p id="mt"></p><button class="primary" onclick="newGame()">Fight again</button></div></div>
 
 <script>
@@ -124,6 +124,7 @@ const COSTS = { brace: 6, braceD: 8, cannon: 48, mortar: 52, gen: 34, miner: 28,
 const HP = { beam: 32, armor: 78, core: 260, cannon: 58, mortar: 54, gen: 48, miner: 44 };
 const FIRE_COST = { cannon: 12, mortar: 20 };
 const MINER_DRAIN = 7;
+const CORE_METAL = 5;
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
 let nodes, beams, devices, shots, fx, debris, veins;
@@ -429,8 +430,12 @@ function tickEcon(dt) {
     const cap = powerCap(team);
     const prod = powerGen(team);
     energy[team] = Math.min(cap, energy[team] + prod * dt);
-    const miners = devices.filter(d => d.team === team && d.type === 'miner');
     let gained = 0;
+    if (coreOf(team)) {
+      metal[team] += CORE_METAL * dt;
+      gained += CORE_METAL;
+    }
+    const miners = devices.filter(d => d.team === team && d.type === 'miner');
     for (const m of miners) {
       m.active = false;
       const [cx] = deviceCenter(m);
@@ -615,6 +620,105 @@ function refreshCostLine() {
   line.innerHTML = html;
 }
 
+function aiWantHeight() {
+  const ens = [...nodes.values()].filter(n => n.team === E);
+  if (!ens.length) return 1;
+  const span = Math.max(...ens.map(n => n.gx)) - Math.min(...ens.map(n => n.gx));
+  return Math.min(4, 1 + Math.max(0, Math.floor((span - 1) / 2)));
+}
+
+function aiRoomFill(gx, gy, team) {
+  let best = 0;
+  for (const [ox, oy] of [[0, 0], [-1, 0], [0, -1], [-1, -1]]) {
+    const rx = gx + ox, ry = gy + oy;
+    if (ry < 0 || rx < 0) continue;
+    let n = 0;
+    for (const [cx, cy] of [[rx, ry], [rx + 1, ry], [rx, ry + 1], [rx + 1, ry + 1]]) {
+      const k = nk(cx, cy);
+      if (nodes.has(k) && nodes.get(k).team === team) n++;
+    }
+    best = Math.max(best, n);
+  }
+  return best;
+}
+
+function aiEmptyRooms() {
+  const rooms = [];
+  for (let gy = 0; gy < MAXGY; gy++) {
+    for (let gx = 0; gx < MAXGX; gx++) {
+      if (roomReady(gx, gy, E) && !roomTaken(gx, gy)) rooms.push([gx, gy]);
+    }
+  }
+  return rooms;
+}
+
+function aiTryDevices(rooms) {
+  const guns = devices.filter(d => d.team === E && (d.type === 'cannon' || d.type === 'mortar')).length;
+  const gens = devices.filter(d => d.team === E && d.type === 'gen').length;
+  const miners = devices.filter(d => d.team === E && d.type === 'miner').length;
+  const spare = powerGen(E) - miners * MINER_DRAIN;
+  const ground = rooms.filter(r => r[1] === 0).sort((a, b) => {
+    const va = nearestVein(pos(a[0], 0)[0]) ? 0 : 1;
+    const vb = nearestVein(pos(b[0], 0)[0]) ? 0 : 1;
+    return va - vb || b[0] - a[0];
+  });
+  const low = rooms.filter(r => r[1] <= 1).sort((a, b) => a[1] - b[1] || b[0] - a[0]);
+  const gunRooms = rooms.filter(r => r[1] >= 1).sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+
+  if (spare < MINER_DRAIN && gens < 4 && metal[E] >= COSTS.gen && low.length) {
+    if (tryDevice('gen', low[0][0], low[0][1], E)) return true;
+  }
+  if (miners < 3 && metal[E] >= COSTS.miner && ground.length) {
+    if (tryDevice('miner', ground[0][0], ground[0][1], E)) return true;
+  }
+  if (gens < 2 && metal[E] >= COSTS.gen && (low.length || rooms.length)) {
+    const spot = low[0] || rooms[0];
+    if (tryDevice('gen', spot[0], spot[1], E)) return true;
+  }
+  if (guns < 4 && gunRooms.length) {
+    const type = guns % 2 === 0 ? 'cannon' : 'mortar';
+    if (metal[E] >= COSTS[type] && tryDevice(type, gunRooms[0][0], gunRooms[0][1], E)) return true;
+  }
+  return false;
+}
+
+function aiTryExpand() {
+  const wantH = aiWantHeight();
+  const core = coreOf(E);
+  const home = core ? core.gx : 24;
+  const ground = [...nodes.values()].filter(n => n.team === E && n.gy === 0);
+  if (ground.length) {
+    const left = Math.min(...ground.map(n => n.gx));
+    const right = Math.max(...ground.map(n => n.gx));
+    if (tryBrace(left - 1, 0, E)) return true;
+    if (ground.length < 4 && tryBrace(right + 1, 0, E)) return true;
+  }
+
+  const picks = [];
+  for (const n of nodes.values()) {
+    if (n.team !== E) continue;
+    for (const [x, y] of neighbors(n.gx, n.gy)) {
+      if (x !== n.gx && y !== n.gy) continue;
+      const fromK = braceAnchor(x, y, E);
+      if (!fromK) continue;
+      const from = parseN(fromK);
+      if (from.gx !== x && from.gy !== y) continue;
+      const fill = aiRoomFill(x, y, E);
+      let score = (home - x) * 2.4 + fill * 14 + Math.random();
+      if (y === 0) score += 22;
+      else if (y === 1) score += 10;
+      else if (y <= wantH) score += 4 - y;
+      else score -= 30;
+      picks.push({ x, y, score });
+    }
+  }
+  picks.sort((a, b) => b.score - a.score);
+  for (const o of picks) {
+    if (tryBrace(o.x, o.y, E)) return true;
+  }
+  return false;
+}
+
 function aiThink(dt) {
   aiClock -= dt;
   aiShot -= dt;
@@ -627,43 +731,10 @@ function aiThink(dt) {
     }
   }
   if (aiClock > 0) return;
-  aiClock = 0.6 + Math.random() * 0.5;
-
-  const rooms = [];
-  for (let gy = 0; gy < MAXGY; gy++) {
-    for (let gx = 0; gx < MAXGX; gx++) {
-      if (roomReady(gx, gy, E) && !roomTaken(gx, gy)) rooms.push([gx, gy]);
-    }
-  }
-  const guns = devices.filter(d => d.team === E && (d.type === 'cannon' || d.type === 'mortar')).length;
-  const gens = devices.filter(d => d.team === E && d.type === 'gen').length;
-  const miners = devices.filter(d => d.team === E && d.type === 'miner').length;
-  rooms.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-
-  if (miners < 2 && metal[E] >= COSTS.miner && rooms.length) {
-    const ground = rooms.find(r => r[1] === 0) || rooms[0];
-    if (tryDevice('miner', ground[0], ground[1], E)) return;
-  }
-  if (gens < 2 && metal[E] >= COSTS.gen && rooms.length) {
-    if (tryDevice('gen', rooms[0][0], rooms[0][1], E)) return;
-  }
-  if (guns < 3 && rooms.length) {
-    const type = guns % 2 === 0 ? 'cannon' : 'mortar';
-    const up = [...rooms].sort((a, b) => b[1] - a[1]);
-    if (metal[E] >= COSTS[type] && tryDevice(type, up[0][0], up[0][1], E)) return;
-  }
-
-  const posted = postedSet(E);
-  const owned = [...nodes.values()].filter(n => n.team === E);
-  owned.sort((a, b) => (posted.has(nk(a.gx, a.gy)) ? 0 : 1) - (posted.has(nk(b.gx, b.gy)) ? 0 : 1) || a.gx - b.gx);
-  for (const n of owned) {
-    const opts = neighbors(n.gx, n.gy)
-      .map(([x, y]) => ({ x, y, score: (n.gy + 1 === y ? 8 : 0) + (12 - x) + y + Math.random() }))
-      .sort((a, b) => b.score - a.score);
-    for (const o of opts) {
-      if (tryBrace(o.x, o.y, E)) return;
-    }
-  }
+  aiClock = 0.45 + Math.random() * 0.35;
+  const rooms = aiEmptyRooms();
+  if (aiTryDevices(rooms)) return;
+  aiTryExpand();
 }
 
 function update(dt) {
