@@ -14,10 +14,25 @@ h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
   display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;
   margin-bottom:8px;font-size:.86em;
 }
+#hud .res{
+  background:#151c28;border:1px solid #2a3548;border-radius:8px;
+  padding:6px 10px;display:inline-block;
+}
 #hud strong{color:#f0c36a}
 #hud .blue{color:#7ec8ff}
 #hud .red{color:#ff7a6e}
 #hud .pow{color:#7ee0ff}
+#hud .need.ok{color:#7ee0ff}
+#hud .need.short{color:#ff7a6e}
+#buildcost{
+  margin:0 0 8px;padding:8px 14px;max-width:1100px;width:100%;
+  background:#151c28;border:1px solid #3d5a80;border-radius:8px;
+  text-align:center;font-size:.95em;color:#d5deea;
+}
+#buildcost strong{color:#f0c36a}
+#buildcost .pow{color:#7ee0ff}
+#buildcost .need.ok{color:#7ee0ff}
+#buildcost .need.short{color:#ff7a6e}
 .pbar{width:72px;height:8px;background:#1a2433;border:1px solid #3d4d66;border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle;margin-left:6px}
 .pbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#2a8aaa,#7ee0ff)}
 canvas{
@@ -52,20 +67,21 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
 <body>
 <h1>FRAME SIEGE</h1>
 <div id="hud">
-  <span>Metal <strong id="metal">0</strong></span>
-  <span>Power <strong class="pow" id="pow">0</strong>/<span id="powm">0</span><span class="pbar"><i id="powb"></i></span></span>
-  <span>Mine <strong id="inc">0</strong>/s</span>
-  <span>Your core <strong class="blue" id="php">0</strong></span>
-  <span>Enemy core <strong class="red" id="ehp">0</strong></span>
+  <span class="res">Minerals <strong id="metal">0</strong></span>
+  <span class="res">Electric <strong class="pow" id="pow">0</strong>/<span id="powm">0</span><span class="pbar"><i id="powb"></i></span></span>
+  <span class="res">Mine <strong id="inc">0</strong>/s</span>
+  <span class="res">Your core <strong class="blue" id="php">0</strong></span>
+  <span class="res">Enemy core <strong class="red" id="ehp">0</strong></span>
 </div>
+<div id="buildcost">Next miner needs <strong id="minerm">28</strong> minerals to build and <strong class="need" id="minere">7</strong>/s electric to run.</div>
 <canvas id="cv"></canvas>
 <div id="tools">
-  <button id="t-brace" class="on" onclick="setTool('brace')">1 Brace</button>
-  <button id="t-cannon" onclick="setTool('cannon')">2 Cannon</button>
-  <button id="t-mortar" onclick="setTool('mortar')">3 Mortar</button>
-  <button id="t-gen" onclick="setTool('gen')">4 Generator</button>
-  <button id="t-miner" onclick="setTool('miner')">5 Miner</button>
-  <button id="t-armor" onclick="setTool('armor')">6 Armor</button>
+  <button id="t-brace" class="on" onclick="setTool('brace')">1 Brace (6)</button>
+  <button id="t-cannon" onclick="setTool('cannon')">2 Cannon (48)</button>
+  <button id="t-mortar" onclick="setTool('mortar')">3 Mortar (52)</button>
+  <button id="t-gen" onclick="setTool('gen')">4 Generator (34)</button>
+  <button id="t-miner" onclick="setTool('miner')">5 Miner (28 + 7/s)</button>
+  <button id="t-armor" onclick="setTool('armor')">6 Armor (18)</button>
   <button id="t-fire" onclick="setTool('fire')">F Fire</button>
   <button onclick="newGame()">New battle</button>
 </div>
@@ -86,6 +102,7 @@ const P = 0, E = 1;
 const COSTS = { brace: 6, braceD: 8, cannon: 48, mortar: 52, gen: 34, miner: 28, armor: 18 };
 const HP = { beam: 32, armor: 78, core: 260, cannon: 58, mortar: 54, gen: 48, miner: 44 };
 const FIRE_COST = { cannon: 12, mortar: 20 };
+const MINER_DRAIN = 7;
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
 let nodes, beams, devices, shots, fx, debris, veins;
@@ -397,7 +414,7 @@ function tickEcon(dt) {
       m.active = false;
       const [cx] = deviceCenter(m);
       const vein = nearestVein(cx);
-      const drain = 7 * dt;
+      const drain = MINER_DRAIN * dt;
       if (!vein || energy[team] < drain) continue;
       energy[team] -= drain;
       const rate = 9 * (m.gy === 0 ? 1 : 0.4);
@@ -515,14 +532,39 @@ function setTool(t) {
   }
   const hints = {
     brace: 'Posts need a support under them. A floor can hang one span off a posted column — further than that, gravity takes it.',
-    cannon: 'Mount in a complete square. Each shot costs 12 power.',
-    mortar: 'Mount in a complete square. Each shot costs 20 power. Aim high.',
-    gen: 'Generator — fills your power pool. Guns and miners both run on electricity.',
-    miner: 'Place over a gold vein (in the dirt). Drills metal while powered. Best on the ground floor.',
+    cannon: 'Mount in a complete square. Each shot costs 12 electric.',
+    mortar: 'Mount in a complete square. Each shot costs 20 electric. Aim high.',
+    gen: 'Generator — fills your electric pool. Guns and miners both run on electricity.',
+    miner: 'Place over a gold vein; best on the ground floor.',
     armor: 'Plate a brace. Armored struts take far more punishment.',
-    fire: 'Click to shoot. No power, no shot. Aim above distant targets.'
+    fire: 'Click to shoot. No electric, no shot. Aim above distant targets.'
   };
   document.getElementById('hint').innerText = hints[t];
+  refreshCostLine();
+}
+
+function refreshCostLine() {
+  const line = document.getElementById('buildcost');
+  if (!line || !devices || !metal) return;
+  const miners = devices.filter(d => d.team === P && d.type === 'miner').length;
+  const spare = powerGen(P) - miners * MINER_DRAIN;
+  const enoughMin = metal[P] >= COSTS.miner;
+  const enoughPow = spare >= MINER_DRAIN;
+  const minClass = enoughMin ? 'ok' : 'short';
+  const powClass = enoughPow ? 'ok' : 'short';
+  const costs = {
+    brace: 'Brace costs <strong>' + COSTS.brace + '</strong> minerals (' + COSTS.braceD + ' if diagonal).',
+    cannon: 'Cannon costs <strong>' + COSTS.cannon + '</strong> minerals to build. Each shot uses <strong class="pow">' + FIRE_COST.cannon + '</strong> electric.',
+    mortar: 'Mortar costs <strong>' + COSTS.mortar + '</strong> minerals to build. Each shot uses <strong class="pow">' + FIRE_COST.mortar + '</strong> electric.',
+    gen: 'Generator costs <strong>' + COSTS.gen + '</strong> minerals to build. Adds 16/s electric and +40 cap.',
+    miner: 'Next miner needs <strong class="' + minClass + '">' + COSTS.miner + '</strong> minerals to build and <strong class="need ' + powClass + '">' + MINER_DRAIN + '</strong>/s electric to run.',
+    armor: 'Armor costs <strong>' + COSTS.armor + '</strong> minerals. Click a brace to plate it.',
+    fire: 'Firing spends <strong class="pow">' + FIRE_COST.cannon + '</strong> electric per cannon and <strong class="pow">' + FIRE_COST.mortar + '</strong> per mortar.'
+  };
+  const html = costs[tool] || costs.miner;
+  if (line.dataset.html === html) return;
+  line.dataset.html = html;
+  line.innerHTML = html;
 }
 
 function aiThink(dt) {
@@ -624,7 +666,8 @@ function update(dt) {
   const cap = powerCap(P);
   document.getElementById('pow').innerText = Math.floor(energy[P]);
   document.getElementById('powm').innerText = cap;
-  document.getElementById('powb').style.width = (100 * energy[P] / cap) + '%';
+  document.getElementById('powb').style.width = (100 * energy[P] / Math.max(1, cap)) + '%';
+  refreshCostLine();
   document.getElementById('php').innerText = pc ? Math.max(0, Math.ceil(pc.hp)) : 0;
   document.getElementById('ehp').innerText = ec ? Math.max(0, Math.ceil(ec.hp)) : 0;
 }
