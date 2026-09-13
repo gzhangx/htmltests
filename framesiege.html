@@ -10,6 +10,20 @@ body{
   min-height:100vh;font-family:'Segoe UI',sans-serif;color:#c5d0dc;padding:16px 12px 24px;
 }
 h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
+#totals{
+  display:flex;gap:10px;flex-wrap:wrap;align-items:stretch;justify-content:center;
+  margin-bottom:6px;width:100%;max-width:720px;
+}
+#totals .total{
+  flex:1;min-width:180px;background:#151c28;border:1px solid #3d5a80;border-radius:8px;
+  padding:5px 10px;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;
+}
+#totals .lab{font-size:.72em;letter-spacing:.6px;text-transform:uppercase;color:#8a97a8}
+#totals strong{font-size:1.05em;line-height:1;color:#f0c36a}
+#totals .elec strong{color:#7ee0ff}
+#totals .cap{font-size:.9em;color:#8a97a8}
+#totals .rate{margin-left:auto;color:#9aa8b8;font-size:.78em}
+#totals .pbar{width:100%;height:5px;margin:1px 0 0;flex-basis:100%}
 #hud{
   display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;
   margin-bottom:8px;font-size:.86em;
@@ -21,9 +35,6 @@ h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
 #hud strong{color:#f0c36a}
 #hud .blue{color:#7ec8ff}
 #hud .red{color:#ff7a6e}
-#hud .pow{color:#7ee0ff}
-#hud .need.ok{color:#7ee0ff}
-#hud .need.short{color:#ff7a6e}
 #buildcost{
   margin:0 0 8px;padding:8px 14px;max-width:1100px;width:100%;
   background:#151c28;border:1px solid #3d5a80;border-radius:8px;
@@ -66,10 +77,20 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
 </head>
 <body>
 <h1>FRAME SIEGE</h1>
+<div id="totals">
+  <div class="total metal">
+    <span class="lab">Total metal</span>
+    <strong id="metal">0</strong>
+    <span class="rate">+<span id="inc">0</span>/s</span>
+  </div>
+  <div class="total elec">
+    <span class="lab">Total electric</span>
+    <strong id="pow">0</strong><span class="cap">/<span id="powm">0</span></span>
+    <span class="rate">+<span id="egen">0</span>/s</span>
+    <span class="pbar"><i id="powb"></i></span>
+  </div>
+</div>
 <div id="hud">
-  <span class="res">Minerals <strong id="metal">0</strong></span>
-  <span class="res">Electric <strong class="pow" id="pow">0</strong>/<span id="powm">0</span><span class="pbar"><i id="powb"></i></span></span>
-  <span class="res">Mine <strong id="inc">0</strong>/s</span>
   <span class="res">Your core <strong class="blue" id="php">0</strong></span>
   <span class="res">Enemy core <strong class="red" id="ehp">0</strong></span>
 </div>
@@ -432,19 +453,46 @@ function tickEcon(dt) {
   }
 }
 
-function tryBrace(gx, gy, team) {
-  if (!canNode(gx, gy)) return false;
+function braceAnchor(gx, gy, team) {
+  if (!canNode(gx, gy)) return null;
   const dest = nk(gx, gy);
-  if (nodes.has(dest) && nodes.get(dest).team !== team) return false;
-  let best = null, bestD = 99;
+  if (nodes.has(dest) && nodes.get(dest).team !== team) return null;
+  let best = null, bestScore = 99;
   for (const [nx, ny] of neighbors(gx, gy)) {
     const k = nk(nx, ny);
     const n = nodes.get(k);
     if (!n || n.team !== team) continue;
-    const d = Math.hypot(nx - gx, ny - gy);
-    if (d < bestD && !beams.has(bk(k, dest))) { bestD = d; best = k; }
+    if (beams.has(bk(k, dest))) continue;
+    if (!canSupportNew(k, gx, gy, team)) continue;
+    const diag = nx !== gx && ny !== gy;
+    const score = Math.hypot(nx - gx, ny - gy) + (diag ? 0.65 : 0);
+    if (score < bestScore) { bestScore = score; best = k; }
   }
-  if (!best || !canSupportNew(best, gx, gy, team)) return false;
+  return best;
+}
+
+function pickBraceCell(mx, my, team) {
+  const [sgx, sgy] = snap(mx, my);
+  let best = null, bestScore = 1e9;
+  for (let gx = sgx - 1; gx <= sgx + 1; gx++) {
+    for (let gy = sgy - 1; gy <= sgy + 1; gy++) {
+      const fromK = braceAnchor(gx, gy, team);
+      if (!fromK) continue;
+      const [x, y] = pos(gx, gy);
+      const from = parseN(fromK);
+      const diag = from.gx !== gx && from.gy !== gy;
+      const score = Math.hypot(x - mx, y - my) + (diag ? 10 : 0);
+      if (score < bestScore) { bestScore = score; best = [gx, gy]; }
+    }
+  }
+  if (!best || bestScore > CELL * 0.9) return [sgx, sgy];
+  return best;
+}
+
+function tryBrace(gx, gy, team) {
+  const best = braceAnchor(gx, gy, team);
+  if (!best) return false;
+  const dest = nk(gx, gy);
   const diag = parseN(best).gx !== gx && parseN(best).gy !== gy;
   const cost = diag ? COSTS.braceD : COSTS.brace;
   if (metal[team] < cost) return false;
@@ -666,6 +714,7 @@ function update(dt) {
   const cap = powerCap(P);
   document.getElementById('pow').innerText = Math.floor(energy[P]);
   document.getElementById('powm').innerText = cap;
+  document.getElementById('egen').innerText = powerGen(P).toFixed(0);
   document.getElementById('powb').style.width = (100 * energy[P] / Math.max(1, cap)) + '%';
   refreshCostLine();
   document.getElementById('php').innerText = pc ? Math.max(0, Math.ceil(pc.hp)) : 0;
@@ -770,7 +819,7 @@ function drawDevices() {
       ctx.beginPath();
       for (let i = 0; i < 6; i++) {
         const a = Math.PI / 3 * i - Math.PI / 6;
-        i ? ctx.lineTo(Math.cos(a) * 15, Math.sin(a) * 15) : ctx.moveTo(Math.cos(a) * 15, Math.sin(a) * 15);
+        i ? ctx.lineTo(Math.cos(a) * 11, Math.sin(a) * 11) : ctx.moveTo(Math.cos(a) * 11, Math.sin(a) * 11);
       }
       ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#f0c36a';
@@ -815,25 +864,18 @@ function drawGhost() {
   if (!playing || tool === 'fire' || !hover) return;
   const [gx, gy] = hover;
   if (tool === 'brace') {
-    if (!canNode(gx, gy)) return;
-    let best = null, bestD = 99;
-    for (const [nx, ny] of neighbors(gx, gy)) {
-      const k = nk(nx, ny);
-      const n = nodes.get(k);
-      if (!n || n.team !== P) continue;
-      const d = Math.hypot(nx - gx, ny - gy);
-      if (d < bestD) { bestD = d; best = k; }
-    }
+    const best = braceAnchor(gx, gy, P);
     if (!best) return;
-    const ok = canSupportNew(best, gx, gy, P);
     const pa = parseN(best);
     const [ax, ay] = pos(pa.gx, pa.gy);
     const [bx, by] = pos(gx, gy);
     ctx.setLineDash([5, 4]);
-    ctx.strokeStyle = ok ? 'rgba(126,200,255,.75)' : 'rgba(255,90,80,.75)';
+    ctx.strokeStyle = 'rgba(126,200,255,.75)';
     ctx.lineWidth = 4;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(126,200,255,.55)';
+    ctx.beginPath(); ctx.arc(bx, by, 4.5, 0, Math.PI * 2); ctx.fill();
   } else if (tool === 'cannon' || tool === 'mortar' || tool === 'gen' || tool === 'miner') {
     const spots = roomsAt(gx, gy, P);
     if (!spots.length) return;
@@ -878,9 +920,9 @@ function drawShots() {
 
 function render() {
   drawTerrain();
+  drawDevices();
   drawBeams();
   drawGhost();
-  drawDevices();
   drawShots();
   if (tool === 'fire' && playing) {
     ctx.strokeStyle = 'rgba(255,122,110,.7)';
@@ -890,21 +932,25 @@ function render() {
   }
 }
 
+function pointerPos(e) {
+  const r = cv.getBoundingClientRect();
+  mx = (e.clientX - r.left) * (W / r.width);
+  my = (e.clientY - r.top) * (H / r.height);
+  hover = tool === 'brace' ? pickBraceCell(mx, my, P) : snap(mx, my);
+}
+
 function onClick() {
   if (!playing) return;
-  const [gx, gy] = snap(mx, my);
-  hover = [gx, gy];
   if (tool === 'fire') { fireAt(P, mx, my); return; }
+  const [gx, gy] = tool === 'brace' ? pickBraceCell(mx, my, P) : snap(mx, my);
+  hover = [gx, gy];
   if (tool === 'brace') tryBrace(gx, gy, P);
   else if (tool === 'armor') tryArmor(gx, gy, P);
   else tryDevice(tool, gx, gy, P);
 }
 
 cv.addEventListener('pointermove', e => {
-  const r = cv.getBoundingClientRect();
-  mx = (e.clientX - r.left) * (W / r.width);
-  my = (e.clientY - r.top) * (H / r.height);
-  hover = snap(mx, my);
+  pointerPos(e);
   if (tool === 'fire') {
     for (const d of devices) {
       if (d.team === P && (d.type === 'cannon' || d.type === 'mortar')) {
@@ -914,7 +960,11 @@ cv.addEventListener('pointermove', e => {
     }
   }
 });
-cv.addEventListener('pointerdown', e => { if (e.button === 0) onClick(); });
+cv.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  pointerPos(e);
+  onClick();
+});
 cv.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
