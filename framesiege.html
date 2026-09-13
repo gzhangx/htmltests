@@ -11,12 +11,15 @@ body{
 }
 h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
 #hud{
-  display:flex;gap:18px;flex-wrap:wrap;align-items:center;justify-content:center;
-  margin-bottom:8px;font-size:.88em;
+  display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;
+  margin-bottom:8px;font-size:.86em;
 }
 #hud strong{color:#f0c36a}
 #hud .blue{color:#7ec8ff}
 #hud .red{color:#ff7a6e}
+#hud .pow{color:#7ee0ff}
+.pbar{width:72px;height:8px;background:#1a2433;border:1px solid #3d4d66;border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle;margin-left:6px}
+.pbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#2a8aaa,#7ee0ff)}
 canvas{
   border:2px solid #2a3548;border-radius:8px;display:block;
   box-shadow:0 0 40px rgba(80,120,180,.18);background:#15202e;
@@ -25,7 +28,7 @@ canvas{
 #tools{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:10px}
 button{
   background:#243044;color:#d5deea;border:1px solid #3d4d66;border-radius:6px;
-  padding:7px 14px;font-weight:700;cursor:pointer;font-size:.86em;
+  padding:7px 12px;font-weight:700;cursor:pointer;font-size:.84em;
 }
 button:hover{background:#2e3d55}
 button.on{background:#3d5a80;border-color:#7ec8ff;color:#fff}
@@ -38,7 +41,7 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
 }
 #msg .card{
   background:#151c28;border:2px solid #f0c36a;border-radius:14px;
-  padding:36px 42px;text-align:center;max-width:420px;
+  padding:36px 42px;text-align:center;max-width:440px;
 }
 #msg.lose .card{border-color:#ff7a6e}
 #msg h2{color:#f0c36a;margin-bottom:10px}
@@ -50,7 +53,8 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
 <h1>FRAME SIEGE</h1>
 <div id="hud">
   <span>Metal <strong id="metal">0</strong></span>
-  <span>Income <strong id="inc">0</strong>/s</span>
+  <span>Power <strong class="pow" id="pow">0</strong>/<span id="powm">0</span><span class="pbar"><i id="powb"></i></span></span>
+  <span>Mine <strong id="inc">0</strong>/s</span>
   <span>Your core <strong class="blue" id="php">0</strong></span>
   <span>Enemy core <strong class="red" id="ehp">0</strong></span>
 </div>
@@ -59,12 +63,13 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
   <button id="t-brace" class="on" onclick="setTool('brace')">1 Brace</button>
   <button id="t-cannon" onclick="setTool('cannon')">2 Cannon</button>
   <button id="t-mortar" onclick="setTool('mortar')">3 Mortar</button>
-  <button id="t-reactor" onclick="setTool('reactor')">4 Reactor</button>
-  <button id="t-armor" onclick="setTool('armor')">5 Armor</button>
+  <button id="t-gen" onclick="setTool('gen')">4 Generator</button>
+  <button id="t-miner" onclick="setTool('miner')">5 Miner</button>
+  <button id="t-armor" onclick="setTool('armor')">6 Armor</button>
   <button id="t-fire" onclick="setTool('fire')">F Fire</button>
   <button onclick="newGame()">New battle</button>
 </div>
-<div id="hint">Build frames from your fort, fill rooms with weapons, then switch to Fire and click to shoot. Destroy their core — or drop it.</div>
+<div id="hint">Mine gold veins for metal. Generators make power for drills and guns. A floor one level up falls unless a post (or a one-span joist) holds it.</div>
 <div id="msg"><div class="card"><h2 id="mh"></h2><p id="mt"></p><button class="primary" onclick="newGame()">Fight again</button></div></div>
 
 <script>
@@ -78,12 +83,14 @@ const GX0 = 42;
 const GROUND = 498;
 const MAXGX = 29, MAXGY = 12;
 const P = 0, E = 1;
-const COSTS = { brace: 6, braceD: 8, cannon: 48, mortar: 52, reactor: 36, armor: 18 };
-const HP = { beam: 32, armor: 78, core: 260, cannon: 58, mortar: 54, reactor: 48 };
+const COSTS = { brace: 6, braceD: 8, cannon: 48, mortar: 52, gen: 34, miner: 28, armor: 18 };
+const HP = { beam: 32, armor: 78, core: 260, cannon: 58, mortar: 54, gen: 48, miner: 44 };
+const FIRE_COST = { cannon: 12, mortar: 20 };
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
-let nodes, beams, devices, shots, fx, metal, tool, hover, over;
-let mx = 0, my = 0, playing, aiClock, aiShot;
+let nodes, beams, devices, shots, fx, debris, veins;
+let metal, energy, tool, hover, over;
+let mx = 0, my = 0, playing, aiClock, aiShot, mineRate;
 
 function nk(gx, gy) { return gx + ',' + gy; }
 function parseN(k) { const [a, b] = k.split(',').map(Number); return { gx: a, gy: b }; }
@@ -107,16 +114,28 @@ function newGame() {
   devices = [];
   shots = [];
   fx = [];
-  metal = [140, 140];
+  debris = [];
+  metal = [80, 80];
+  energy = [40, 40];
   tool = 'brace';
   hover = null;
   over = false;
   playing = true;
-  aiClock = 1.2;
-  aiShot = 2.2;
+  aiClock = 1.4;
+  aiShot = 2.4;
+  mineRate = [0, 0];
+  seedVeins();
   setTool('brace');
   seedFort(P, 2);
   seedFort(E, 24);
+}
+
+function seedVeins() {
+  veins = [];
+  for (let i = 0; i < 4; i++) {
+    veins.push({ x: 90 + i * 58, remaining: 260, max: 260 });
+    veins.push({ x: W - 90 - i * 58, remaining: 260, max: 260 });
+  }
 }
 
 function seedFort(team, ox) {
@@ -130,6 +149,7 @@ function seedFort(team, ox) {
     }
   }
   addDevice('core', ox, 0, team);
+  addDevice('miner', ox + 1, 0, team);
 }
 
 function addNode(gx, gy, team, anchored) {
@@ -155,7 +175,7 @@ function addDevice(type, gx, gy, team) {
   devices.push({
     type, gx, gy, team,
     hp: HP[type], max: HP[type],
-    cd: 0, angle: team === P ? 0 : Math.PI
+    cd: 0, angle: team === P ? 0 : Math.PI, active: false
   });
 }
 
@@ -175,9 +195,7 @@ function neighbors(gx, gy) {
 function roomReady(gx, gy, team) {
   const ks = [nk(gx, gy), nk(gx + 1, gy), nk(gx, gy + 1), nk(gx + 1, gy + 1)];
   if (ks.some(k => !nodes.has(k) || nodes.get(k).team !== team)) return false;
-  const sides = [
-    bk(ks[0], ks[1]), bk(ks[0], ks[2]), bk(ks[1], ks[3]), bk(ks[2], ks[3])
-  ];
+  const sides = [bk(ks[0], ks[1]), bk(ks[0], ks[2]), bk(ks[1], ks[3]), bk(ks[2], ks[3])];
   return sides.every(k => beams.has(k) && beams.get(k).team === team);
 }
 
@@ -196,54 +214,107 @@ function deviceCenter(d) {
   return [(x1 + x2) / 2, (y1 + y2) / 2];
 }
 
-function income(team) {
-  return 7 + devices.filter(d => d.team === team && d.type === 'reactor').length * 9;
-}
-
 function coreOf(team) {
   return devices.find(d => d.team === team && d.type === 'core');
 }
 
-function connected(team) {
-  const seen = new Set();
-  const q = [];
+function postedSet(team) {
+  const posted = new Set();
   for (const [k, n] of nodes) {
-    if (n.team === team && (n.anchored || n.gy === 0)) { seen.add(k); q.push(k); }
+    if (n.team === team && n.gy === 0 && n.anchored) posted.add(k);
   }
-  while (q.length) {
-    const cur = q.pop();
-    for (const [, b] of beams) {
-      if (b.team !== team) continue;
-      const o = b.a === cur ? b.b : b.b === cur ? b.a : null;
-      if (o && !seen.has(o) && nodes.has(o) && nodes.get(o).team === team) {
-        seen.add(o); q.push(o);
-      }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [k, n] of nodes) {
+      if (n.team !== team || posted.has(k)) continue;
+      if (hasPost(k, n, posted, team)) { posted.add(k); changed = true; }
     }
   }
-  return seen;
+  return posted;
+}
+
+function hasPost(k, n, posted, team) {
+  for (const b of beams.values()) {
+    if (b.team !== team) continue;
+    const o = b.a === k ? b.b : b.b === k ? b.a : null;
+    if (!o || !posted.has(o)) continue;
+    const on = parseN(o);
+    if (on.gy === n.gy - 1 && Math.abs(on.gx - n.gx) <= 1) return true;
+  }
+  return false;
+}
+
+function stableSet(team) {
+  const posted = postedSet(team);
+  const stable = new Set(posted);
+  for (const [k, n] of nodes) {
+    if (n.team !== team || stable.has(k)) continue;
+    for (const b of beams.values()) {
+      if (b.team !== team) continue;
+      const o = b.a === k ? b.b : b.b === k ? b.a : null;
+      if (!o || !posted.has(o)) continue;
+      const on = parseN(o);
+      if (on.gy === n.gy && Math.abs(on.gx - n.gx) === 1) { stable.add(k); break; }
+    }
+  }
+  return stable;
+}
+
+function canSupportNew(fromK, toGx, toGy, team) {
+  if (toGy === 0) return true;
+  const posted = postedSet(team);
+  const from = parseN(fromK);
+  if (from.gy === toGy - 1 && Math.abs(from.gx - toGx) <= 1 && posted.has(fromK)) return true;
+  if (from.gy === toGy && Math.abs(from.gx - toGx) === 1 && posted.has(fromK)) return true;
+  return false;
+}
+
+function dropNode(n) {
+  const [x, y] = pos(n.gx, n.gy);
+  debris.push({ x, y, vx: (Math.random() - 0.5) * 50, vy: 30, rot: 0, rv: (Math.random() - 0.5) * 6, kind: 'joint', team: n.team, life: 1.6 });
+  burst(x, y, n.team === P ? '#c4a36a' : '#d09080', 5);
+}
+
+function dropBeam(b) {
+  const pa = parseN(b.a), pb = parseN(b.b);
+  const [ax, ay] = pos(pa.gx, pa.gy);
+  const [bx, by] = pos(pb.gx, pb.gy);
+  debris.push({
+    x: (ax + bx) / 2, y: (ay + by) / 2,
+    x1: ax - (ax + bx) / 2, y1: ay - (ay + by) / 2,
+    x2: bx - (ax + bx) / 2, y2: by - (ay + by) / 2,
+    vx: (Math.random() - 0.5) * 40, vy: 20, rot: 0, rv: (Math.random() - 0.5) * 4,
+    kind: 'beam', team: b.team, armored: b.armored, life: 1.8
+  });
+}
+
+function dropDevice(d) {
+  const [x, y] = deviceCenter(d);
+  debris.push({ x, y, vx: (Math.random() - 0.5) * 30, vy: 10, rot: 0, rv: (Math.random() - 0.5) * 3, kind: 'dev', type: d.type, team: d.team, life: 2 });
+  burst(x, y, '#ffaa66', 10);
 }
 
 function collapse() {
   for (const team of [P, E]) {
-    const live = connected(team);
+    const live = stableSet(team);
     for (const [k, n] of [...nodes]) {
-      if (n.team !== team) continue;
-      if (!live.has(k)) {
-        const [x, y] = pos(n.gx, n.gy);
-        burst(x, y, n.team === P ? '#c4a36a' : '#d09080', 6);
-        nodes.delete(k);
-      }
+      if (n.team !== team || live.has(k)) continue;
+      dropNode(n);
+      nodes.delete(k);
     }
     for (const [k, b] of [...beams]) {
       if (b.team !== team) continue;
-      if (!nodes.has(b.a) || !nodes.has(b.b)) beams.delete(k);
+      if (!nodes.has(b.a) || !nodes.has(b.b)) {
+        dropBeam(b);
+        beams.delete(k);
+      }
     }
     for (let i = devices.length - 1; i >= 0; i--) {
       const d = devices[i];
       if (d.team !== team) continue;
       if (!roomReady(d.gx, d.gy, team)) {
-        const [x, y] = deviceCenter(d);
-        burst(x, y, '#ffaa66', 10);
+        dropDevice(d);
         if (d.type === 'core') endGame(team !== P);
         devices.splice(i, 1);
       }
@@ -268,31 +339,80 @@ function explode(x, y, radius, dmg, owner) {
     const fall = 1 - dist / radius;
     hpObj.hp -= dmg * (isCore ? 0.75 : 1) * (0.45 + 0.55 * fall);
   };
-  for (const [, b] of beams) {
+  for (const b of beams.values()) {
     if (b.team === owner) continue;
     const pa = parseN(b.a), pb = parseN(b.b);
     const [ax, ay] = pos(pa.gx, pa.gy);
     const [bx, by] = pos(pb.gx, pb.gy);
     const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1)));
-    const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
-    hit(px, py, b, false);
+    hit(ax + (bx - ax) * t, ay + (by - ay) * t, b, false);
   }
   for (const d of devices) {
     if (d.team === owner) continue;
     const [cx, cy] = deviceCenter(d);
     hit(cx, cy, d, d.type === 'core');
   }
-  for (const [k, b] of [...beams]) if (b.hp <= 0) { beams.delete(k); }
+  for (const [k, b] of [...beams]) if (b.hp <= 0) { dropBeam(b); beams.delete(k); }
   for (let i = devices.length - 1; i >= 0; i--) {
     const d = devices[i];
     if (d.hp <= 0) {
-      const [cx, cy] = deviceCenter(d);
-      burst(cx, cy, '#ffa070', 14);
+      dropDevice(d);
       if (d.type === 'core') endGame(d.team !== P);
       devices.splice(i, 1);
     }
   }
   collapse();
+}
+
+function nearestVein(x) {
+  let best = null, bestD = 88;
+  for (const v of veins) {
+    if (v.remaining <= 0) continue;
+    const d = Math.abs(v.x - x);
+    if (d < bestD) { bestD = d; best = v; }
+  }
+  return best;
+}
+
+function powerCap(team) {
+  const gens = devices.filter(d => d.team === team && d.type === 'gen').length;
+  return 55 + gens * 40;
+}
+
+function powerGen(team) {
+  const gens = devices.filter(d => d.team === team && d.type === 'gen').length;
+  const core = coreOf(team) ? 8 : 0;
+  return core + gens * 16;
+}
+
+function tickEcon(dt) {
+  mineRate = [0, 0];
+  for (const team of [P, E]) {
+    const cap = powerCap(team);
+    const prod = powerGen(team);
+    energy[team] = Math.min(cap, energy[team] + prod * dt);
+    const miners = devices.filter(d => d.team === team && d.type === 'miner');
+    let gained = 0;
+    for (const m of miners) {
+      m.active = false;
+      const [cx] = deviceCenter(m);
+      const vein = nearestVein(cx);
+      const drain = 7 * dt;
+      if (!vein || energy[team] < drain) continue;
+      energy[team] -= drain;
+      const rate = 9 * (m.gy === 0 ? 1 : 0.4);
+      const take = Math.min(vein.remaining, rate * dt);
+      vein.remaining -= take;
+      metal[team] += take;
+      gained += rate;
+      m.active = true;
+      if (Math.random() < 0.12) {
+        const g = groundAt(cx);
+        burst(cx + (Math.random() - 0.5) * 16, g - 4, '#e6c35a', 2);
+      }
+    }
+    mineRate[team] = gained;
+  }
 }
 
 function tryBrace(gx, gy, team) {
@@ -307,13 +427,14 @@ function tryBrace(gx, gy, team) {
     const d = Math.hypot(nx - gx, ny - gy);
     if (d < bestD && !beams.has(bk(k, dest))) { bestD = d; best = k; }
   }
-  if (!best) return false;
+  if (!best || !canSupportNew(best, gx, gy, team)) return false;
   const diag = parseN(best).gx !== gx && parseN(best).gy !== gy;
   const cost = diag ? COSTS.braceD : COSTS.brace;
   if (metal[team] < cost) return false;
   metal[team] -= cost;
   addNode(gx, gy, team, gy === 0);
   addBeam(best, dest, team);
+  collapse();
   return true;
 }
 
@@ -322,11 +443,8 @@ function tryArmor(gx, gy, team) {
   let target = null;
   for (const [nx, ny] of neighbors(gx, gy)) {
     const k = nk(nx, ny);
-    const id = bk(k, dest);
-    const b = beams.get(id);
-    if (b && b.team === team && !b.armored) {
-      target = b; break;
-    }
+    const b = beams.get(bk(k, dest));
+    if (b && b.team === team && !b.armored) { target = b; break; }
   }
   if (!target || metal[team] < COSTS.armor) return false;
   metal[team] -= COSTS.armor;
@@ -349,6 +467,9 @@ function fireAt(team, tx, ty) {
   for (const d of devices) {
     if (d.team !== team || (d.type !== 'cannon' && d.type !== 'mortar')) continue;
     if (d.cd > 0) continue;
+    const cost = FIRE_COST[d.type];
+    if (energy[team] < cost) continue;
+    energy[team] -= cost;
     const [x, y] = deviceCenter(d);
     d.angle = Math.atan2(ty - y, tx - x);
     const mortar = d.type === 'mortar';
@@ -387,18 +508,19 @@ function endGame(playerWon) {
 
 function setTool(t) {
   tool = t;
-  for (const id of ['brace', 'cannon', 'mortar', 'reactor', 'armor', 'fire']) {
+  for (const id of ['brace', 'cannon', 'mortar', 'gen', 'miner', 'armor', 'fire']) {
     const el = document.getElementById('t-' + id);
     el.classList.toggle('on', t === id && t !== 'fire');
     el.classList.toggle('fireon', t === 'fire' && id === 'fire');
   }
   const hints = {
-    brace: 'Click a grid point next to your fort to extend wooden bracing.',
-    cannon: 'Click a complete square room to mount a direct-fire cannon.',
-    mortar: 'Click a complete square room to mount an arcing mortar.',
-    reactor: 'Click a complete square room for a reactor — extra metal income.',
-    armor: 'Click a brace to plate it. Armored struts take far more punishment.',
-    fire: 'Click the battlefield. Ready guns fire toward that point — aim above distant targets.'
+    brace: 'Posts need a support under them. A floor can hang one span off a posted column — further than that, gravity takes it.',
+    cannon: 'Mount in a complete square. Each shot costs 12 power.',
+    mortar: 'Mount in a complete square. Each shot costs 20 power. Aim high.',
+    gen: 'Generator — fills your power pool. Guns and miners both run on electricity.',
+    miner: 'Place over a gold vein (in the dirt). Drills metal while powered. Best on the ground floor.',
+    armor: 'Plate a brace. Armored struts take far more punishment.',
+    fire: 'Click to shoot. No power, no shot. Aim above distant targets.'
   };
   document.getElementById('hint').innerText = hints[t];
 }
@@ -407,15 +529,15 @@ function aiThink(dt) {
   aiClock -= dt;
   aiShot -= dt;
   if (aiShot <= 0) {
-    aiShot = 1.8 + Math.random() * 0.8;
+    aiShot = 1.9 + Math.random() * 0.9;
     const core = coreOf(P);
-    if (core) {
+    if (core && energy[E] > 18) {
       const [cx, cy] = deviceCenter(core);
       fireAt(E, cx + (Math.random() - 0.5) * 50, cy - 40 - Math.random() * 70);
     }
   }
   if (aiClock > 0) return;
-  aiClock = 0.55 + Math.random() * 0.5;
+  aiClock = 0.6 + Math.random() * 0.5;
 
   const rooms = [];
   for (let gy = 0; gy < MAXGY; gy++) {
@@ -424,23 +546,29 @@ function aiThink(dt) {
     }
   }
   const guns = devices.filter(d => d.team === E && (d.type === 'cannon' || d.type === 'mortar')).length;
-  const reactors = devices.filter(d => d.team === E && d.type === 'reactor').length;
-  rooms.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+  const gens = devices.filter(d => d.team === E && d.type === 'gen').length;
+  const miners = devices.filter(d => d.team === E && d.type === 'miner').length;
+  rooms.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
 
-  if (reactors < 2 && metal[E] >= COSTS.reactor && rooms.length) {
-    if (tryDevice('reactor', rooms[0][0], rooms[0][1], E)) return;
+  if (miners < 2 && metal[E] >= COSTS.miner && rooms.length) {
+    const ground = rooms.find(r => r[1] === 0) || rooms[0];
+    if (tryDevice('miner', ground[0], ground[1], E)) return;
   }
-  if (guns < 4 && rooms.length) {
+  if (gens < 2 && metal[E] >= COSTS.gen && rooms.length) {
+    if (tryDevice('gen', rooms[0][0], rooms[0][1], E)) return;
+  }
+  if (guns < 3 && rooms.length) {
     const type = guns % 2 === 0 ? 'cannon' : 'mortar';
-    if (metal[E] >= COSTS[type] && tryDevice(type, rooms[0][0], rooms[0][1], E)) return;
+    const up = [...rooms].sort((a, b) => b[1] - a[1]);
+    if (metal[E] >= COSTS[type] && tryDevice(type, up[0][0], up[0][1], E)) return;
   }
 
+  const posted = postedSet(E);
   const owned = [...nodes.values()].filter(n => n.team === E);
-  owned.sort((a, b) => a.gx - b.gx || b.gy - a.gy);
+  owned.sort((a, b) => (posted.has(nk(a.gx, a.gy)) ? 0 : 1) - (posted.has(nk(b.gx, b.gy)) ? 0 : 1) || a.gx - b.gx);
   for (const n of owned) {
     const opts = neighbors(n.gx, n.gy)
-      .map(([x, y]) => ({ x, y, score: (12 - x) + y * 1.4 + Math.random() }))
-      .filter(o => canNode(o.x, o.y) && (!nodes.has(nk(o.x, o.y)) || nodes.get(nk(o.x, o.y)).team === E))
+      .map(([x, y]) => ({ x, y, score: (n.gy + 1 === y ? 8 : 0) + (12 - x) + y + Math.random() }))
       .sort((a, b) => b.score - a.score);
     for (const o of opts) {
       if (tryBrace(o.x, o.y, E)) return;
@@ -453,8 +581,8 @@ function update(dt) {
     updateFx(dt);
     return;
   }
-  metal[P] += income(P) * dt;
-  metal[E] += income(E) * dt;
+  tickEcon(dt);
+  collapse();
   for (const d of devices) d.cd = Math.max(0, d.cd - dt);
 
   for (const s of shots) {
@@ -467,7 +595,7 @@ function update(dt) {
     const s = shots[i];
     let hit = s.y >= groundAt(s.x) || s.x < 0 || s.x > W || s.y < -40 || s.life <= 0;
     if (!hit) {
-      for (const [, b] of beams) {
+      for (const b of beams.values()) {
         if (b.team === s.team) continue;
         const pa = parseN(b.a), pb = parseN(b.b);
         const [ax, ay] = pos(pa.gx, pa.gy);
@@ -492,7 +620,11 @@ function update(dt) {
   updateFx(dt);
   const pc = coreOf(P), ec = coreOf(E);
   document.getElementById('metal').innerText = Math.floor(metal[P]);
-  document.getElementById('inc').innerText = income(P);
+  document.getElementById('inc').innerText = mineRate[P].toFixed(0);
+  const cap = powerCap(P);
+  document.getElementById('pow').innerText = Math.floor(energy[P]);
+  document.getElementById('powm').innerText = cap;
+  document.getElementById('powb').style.width = (100 * energy[P] / cap) + '%';
   document.getElementById('php').innerText = pc ? Math.max(0, Math.ceil(pc.hp)) : 0;
   document.getElementById('ehp').innerText = ec ? Math.max(0, Math.ceil(ec.hp)) : 0;
 }
@@ -502,6 +634,16 @@ function updateFx(dt) {
     p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 280 * dt; p.life -= dt;
   }
   fx = fx.filter(p => p.life > 0);
+  for (const d of debris) {
+    d.vy += 720 * dt;
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    d.rot += d.rv * dt;
+    d.life -= dt;
+    const g = groundAt(d.x);
+    if (d.y > g - 4) { d.y = g - 4; d.vy *= -0.15; d.vx *= 0.7; d.rv *= 0.6; }
+  }
+  debris = debris.filter(d => d.life > 0);
 }
 
 function drawTerrain() {
@@ -523,6 +665,20 @@ function drawTerrain() {
   dirt.addColorStop(1, '#2a2018');
   ctx.fillStyle = dirt;
   ctx.fill();
+
+  for (const v of veins) {
+    if (v.remaining <= 0) continue;
+    const g = groundAt(v.x);
+    const t = v.remaining / v.max;
+    ctx.fillStyle = `rgba(230,195,90,${0.35 + 0.5 * t})`;
+    ctx.beginPath();
+    ctx.ellipse(v.x, g + 16, 16, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f0d36a';
+    ctx.beginPath(); ctx.arc(v.x - 4, g + 12, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(v.x + 5, g + 18, 2.4, 0, Math.PI * 2); ctx.fill();
+  }
+
   ctx.strokeStyle = '#6a8a4a';
   ctx.lineWidth = 3;
   ctx.beginPath();
@@ -546,10 +702,16 @@ function drawBeams() {
         : `rgba(${180},${80 * t + 40},${50},0.95)`;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
+  const posted = playing ? postedSet(P) : new Set();
   for (const n of nodes.values()) {
     const [x, y] = pos(n.gx, n.gy);
     ctx.fillStyle = n.team === P ? '#d8c090' : '#d09078';
     ctx.beginPath(); ctx.arc(x, y, 4.2, 0, Math.PI * 2); ctx.fill();
+    if (n.team === P && posted.has(nk(n.gx, n.gy))) {
+      ctx.strokeStyle = 'rgba(126,200,255,.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+    }
   }
 }
 
@@ -570,14 +732,23 @@ function drawDevices() {
       ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#f0c36a';
       ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
-    } else if (d.type === 'reactor') {
-      ctx.fillStyle = '#2a4a3a';
-      ctx.strokeStyle = '#5fd68a';
+    } else if (d.type === 'gen') {
+      ctx.fillStyle = '#1e3a4a';
+      ctx.strokeStyle = d.team === P ? '#7ee0ff' : '#ff9a7a';
       ctx.lineWidth = 2;
       ctx.fillRect(-13, -13, 26, 26);
       ctx.strokeRect(-13, -13, 26, 26);
-      ctx.strokeStyle = '#b6ffd0';
+      ctx.strokeStyle = '#b6f6ff';
       ctx.beginPath(); ctx.moveTo(-2, -8); ctx.lineTo(4, 0); ctx.lineTo(-1, 0); ctx.lineTo(3, 8); ctx.stroke();
+    } else if (d.type === 'miner') {
+      ctx.fillStyle = '#3a3220';
+      ctx.strokeStyle = d.active ? '#e6c35a' : '#8a7a50';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-13, -11, 26, 22);
+      ctx.strokeRect(-13, -11, 26, 22);
+      ctx.fillStyle = d.active ? '#f0d36a' : '#a09060';
+      ctx.fillRect(-3, 4, 6, 14);
+      ctx.beginPath(); ctx.moveTo(-6, 18); ctx.lineTo(0, 24); ctx.lineTo(6, 18); ctx.fill();
     } else {
       ctx.fillStyle = '#2a2e36';
       ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
@@ -589,11 +760,10 @@ function drawDevices() {
     }
     ctx.restore();
     if (d.hp < d.max * 0.98) {
-      const [cx, cy] = deviceCenter(d);
       ctx.fillStyle = '#111';
-      ctx.fillRect(cx - 14, cy - 24, 28, 4);
+      ctx.fillRect(x - 14, y - 24, 28, 4);
       ctx.fillStyle = d.hp / d.max > 0.4 ? '#5fd68a' : '#ff7a6e';
-      ctx.fillRect(cx - 14, cy - 24, 28 * Math.max(0, d.hp / d.max), 4);
+      ctx.fillRect(x - 14, y - 24, 28 * Math.max(0, d.hp / d.max), 4);
     }
   }
 }
@@ -609,26 +779,25 @@ function drawGhost() {
       const n = nodes.get(k);
       if (!n || n.team !== P) continue;
       const d = Math.hypot(nx - gx, ny - gy);
-      if (d < bestD) { bestD = d; best = [nx, ny]; }
+      if (d < bestD) { bestD = d; best = k; }
     }
     if (!best) return;
-    const [ax, ay] = pos(best[0], best[1]);
+    const ok = canSupportNew(best, gx, gy, P);
+    const pa = parseN(best);
+    const [ax, ay] = pos(pa.gx, pa.gy);
     const [bx, by] = pos(gx, gy);
     ctx.setLineDash([5, 4]);
-    ctx.strokeStyle = 'rgba(126,200,255,.7)';
+    ctx.strokeStyle = ok ? 'rgba(126,200,255,.75)' : 'rgba(255,90,80,.75)';
     ctx.lineWidth = 4;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(126,200,255,.5)';
-    ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
-  } else if (tool === 'cannon' || tool === 'mortar' || tool === 'reactor') {
+  } else if (tool === 'cannon' || tool === 'mortar' || tool === 'gen' || tool === 'miner') {
     const spots = roomsAt(gx, gy, P);
     if (!spots.length) return;
     const [sx, sy] = spots[0];
     const [x1, y1] = pos(sx, sy);
-    const [x2, y2] = pos(sx + 1, sy + 1);
     ctx.fillStyle = 'rgba(126,200,255,.18)';
-    ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), CELL, CELL);
+    ctx.fillRect(Math.min(x1, pos(sx + 1, sy + 1)[0]), Math.min(y1, pos(sx + 1, sy + 1)[1]), CELL, CELL);
   }
 }
 
@@ -641,6 +810,25 @@ function drawShots() {
     ctx.globalAlpha = Math.max(0, p.life * 2);
     ctx.fillStyle = p.color;
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  for (const d of debris) {
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rot);
+    ctx.globalAlpha = Math.max(0, Math.min(1, d.life));
+    if (d.kind === 'beam') {
+      ctx.strokeStyle = d.team === P ? '#c4a36a' : '#d09080';
+      ctx.lineWidth = d.armored ? 8 : 5;
+      ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke();
+    } else if (d.kind === 'dev') {
+      ctx.fillStyle = '#5a4030';
+      ctx.fillRect(-10, -10, 20, 20);
+    } else {
+      ctx.fillStyle = d.team === P ? '#d8c090' : '#d09078';
+      ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
     ctx.globalAlpha = 1;
   }
 }
@@ -690,8 +878,9 @@ window.addEventListener('keydown', e => {
   if (k === '1') setTool('brace');
   if (k === '2') setTool('cannon');
   if (k === '3') setTool('mortar');
-  if (k === '4') setTool('reactor');
-  if (k === '5') setTool('armor');
+  if (k === '4') setTool('gen');
+  if (k === '5') setTool('miner');
+  if (k === '6') setTool('armor');
   if (k === 'f') setTool('fire');
 });
 
