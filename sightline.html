@@ -70,7 +70,7 @@ canvas{
   <span id="wD">Dash</span>
 </div>
 <canvas id="cv" tabindex="0"></canvas>
-<p id="hint"><b>WASD</b> move · <b>mouse</b> aims · <b>hold left click</b> to fire · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload<br>
+<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>hold left click</b> to fire · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload<br>
 Walls block sight, shots, and blasts. The blade is silent. Guns and grenades call the floor down on you. Stab from behind.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
@@ -644,6 +644,19 @@ function swingKnife() {
   if (!any) spark(px + Math.cos(angle) * 20, py + Math.sin(angle) * 20, '#d7dde8', 3, 20);
 }
 let slashLife = 0;
+function aimMove() {
+  let forward = 0, strafe = 0;
+  if (down['w'] || down['arrowup']) forward += 1;
+  if (down['s'] || down['arrowdown']) forward -= 1;
+  if (down['d'] || down['arrowright']) strafe += 1;
+  if (down['a'] || down['arrowleft']) strafe -= 1;
+  if (!forward && !strafe) return null;
+  const fx = Math.cos(angle), fy = Math.sin(angle);
+  return {
+    x: fx * forward - fy * strafe,
+    y: fy * forward + fx * strafe
+  };
+}
 function tryFire() {
   if (phase !== 'play') return;
   if (weapon === 0) swingKnife();
@@ -897,16 +910,12 @@ function update(dt) {
   tickReload(pistol, dt);
   tickReload(shotgun, dt);
 
+  const wish = aimMove();
   if (phase === 'play' && pressed[' '] && dashCd <= 0) {
-    let mx = 0, my = 0;
-    if (down['w'] || down['arrowup']) my -= 1;
-    if (down['s'] || down['arrowdown']) my += 1;
-    if (down['a'] || down['arrowleft']) mx -= 1;
-    if (down['d'] || down['arrowright']) mx += 1;
-    if (!mx && !my) { mx = Math.cos(angle); my = Math.sin(angle); }
-    const len = Math.hypot(mx, my) || 1;
-    dashVx = mx / len * 480;
-    dashVy = my / len * 480;
+    const dir = wish || { x: Math.cos(angle), y: Math.sin(angle) };
+    const len = Math.hypot(dir.x, dir.y) || 1;
+    dashVx = dir.x / len * 480;
+    dashVy = dir.y / len * 480;
     dashT = 0.12;
     dashCd = DASH_CD;
     iframes = Math.max(iframes, 0.16);
@@ -918,17 +927,10 @@ function update(dt) {
     trails.push({ x: px, y: py, life: 0.16 });
     const mv = tryMove(px, py, dashVx * dt, dashVy * dt, PR);
     px = mv.x; py = mv.y;
-  } else {
-    let mx = 0, my = 0;
-    if (down['w'] || down['arrowup']) my -= 1;
-    if (down['s'] || down['arrowdown']) my += 1;
-    if (down['a'] || down['arrowleft']) mx -= 1;
-    if (down['d'] || down['arrowright']) mx += 1;
-    const len = Math.hypot(mx, my);
-    if (len) {
-      const mv = tryMove(px, py, (mx / len) * SPEED * dt, (my / len) * SPEED * dt, PR);
-      px = mv.x; py = mv.y;
-    }
+  } else if (wish) {
+    const len = Math.hypot(wish.x, wish.y) || 1;
+    const mv = tryMove(px, py, (wish.x / len) * SPEED * dt, (wish.y / len) * SPEED * dt, PR);
+    px = mv.x; py = mv.y;
   }
 
   if (mouseDown) tryFire();
@@ -1138,9 +1140,8 @@ function draw() {
   if (maze) {
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        if (!explored[r][c]) continue;
-        if (maze[r][c] === 1) ctx.fillStyle = visible[r][c] ? '#3c3e50' : '#232430';
-        else ctx.fillStyle = visible[r][c] ? '#1c1a16' : '#101118';
+        if (!explored[r][c] || maze[r][c] === 1) continue;
+        ctx.fillStyle = visible[r][c] ? '#1c1a16' : '#101118';
         ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
       }
     }
@@ -1151,6 +1152,15 @@ function draw() {
   drawPoly(px, py, conePoly, null, 'rgba(255,213,106,0.18)');
   ctx.lineWidth = 2;
   drawPoly(px, py, conePoly, 'rgba(255,204,90,0.22)', 'rgba(255,220,130,0.98)');
+
+  if (maze) {
+    ctx.fillStyle = '#3a3d4c';
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (explored[r][c] && maze[r][c] === 1) ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+      }
+    }
+  }
 
   for (const p of pickups) drawPickup(p);
 
