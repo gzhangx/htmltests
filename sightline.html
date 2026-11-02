@@ -70,8 +70,8 @@ canvas{
   <span id="wD">Dash</span>
 </div>
 <canvas id="cv" tabindex="0"></canvas>
-<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>hold left click</b> to fire · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload<br>
-Walls block sight, shots, and blasts. The blade is silent. Guns and grenades call the floor down on you. Stab from behind.</p>
+<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload<br>
+Walls block sight, shots, and blasts. The door stays shut until every enemy is down, then walk through it.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
 
@@ -105,6 +105,7 @@ let pistol, shotgun;
 let enemies, pickups, bullets, nades, explosions, particles, floaters, tracers, trails;
 let personalPoly, conePoly;
 let mouseX = 0, mouseY = 0, mouseIn = false, mouseDown = false, aimingGrenade = false;
+let doorC = -1, doorR = -1, doorOpen = false, doorMsg = 0;
 let aimPreview = null, grenadePreview = null;
 const down = {};
 let pressed = {};
@@ -169,10 +170,11 @@ function turnToward(current, target, maxRot) {
 }
 function solid(c, r) {
   if (r < 0 || c < 0 || r >= ROWS || c >= COLS) return true;
+  if (c === doorC && r === doorR && !doorOpen) return true;
   return maze[r][c] === 1;
 }
 function isOpen(c, r) {
-  return r >= 0 && c >= 0 && r < ROWS && c < COLS && maze[r][c] === 0;
+  return !solid(c, r);
 }
 function hitsWall(x, y, radius) {
   const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
@@ -188,11 +190,31 @@ function hitsWall(x, y, radius) {
   }
   return false;
 }
-function tryMove(x, y, dx, dy, radius) {
+const BODY_GAP = 20;
+const GUN_NEAR = CELL * 3.15;
+function crowded(x, y, self) {
+  const c = Math.floor(x / CELL), r = Math.floor(y / CELL);
+  if (self !== 'player') {
+    if (Math.floor(px / CELL) === c && Math.floor(py / CELL) === r) return true;
+    if (Math.hypot(x - px, y - py) < BODY_GAP) return true;
+  }
+  for (const o of enemies) {
+    if (!o || o.dead || o === self) continue;
+    if (Math.floor(o.x / CELL) === c && Math.floor(o.y / CELL) === r) return true;
+    if (Math.hypot(x - o.x, y - o.y) < BODY_GAP) return true;
+  }
+  return false;
+}
+function tryMove(x, y, dx, dy, radius, self) {
   let nx = x + dx;
-  if (hitsWall(nx, y, radius)) nx = x;
+  if (hitsWall(nx, y, radius) || crowded(nx, y, self)) nx = x;
   let ny = y + dy;
-  if (hitsWall(nx, ny, radius)) ny = y;
+  if (hitsWall(nx, ny, radius) || crowded(nx, ny, self)) ny = y;
+  if (self && self.kind === 'gunner') {
+    const nd = Math.hypot(nx - px, ny - py);
+    const od = Math.hypot(x - px, y - py);
+    if (nd < GUN_NEAR && nd < od - 0.4) return { x, y };
+  }
   return { x: nx, y: ny };
 }
 function clearLine(x1, y1, x2, y2) {
@@ -231,7 +253,7 @@ function rayEnd(x, y, ang, maxDist, paintMode) {
       explored[r][c] = true;
       if (paintMode === 1) visible[r][c] = true;
     }
-    if (maze[r][c] === 1) return { x: lastX, y: lastY };
+    if (solid(c, r)) return { x: lastX, y: lastY };
     lastX = rx; lastY = ry;
   }
   return { x: x + cos * maxDist, y: y + sin * maxDist };
@@ -338,6 +360,12 @@ function generateMaze() {
   for (let r = 1; r <= 3; r++) for (let c = 1; c <= 3; c++) maze[r][c] = 0;
   for (let c = 1; c <= 10; c++) { maze[1][c] = 0; maze[2][c] = 0; }
   for (let r = 1; r <= 8; r++) { maze[r][1] = 0; maze[r][2] = 0; }
+  doorC = COLS - 2;
+  doorR = ROWS - 2;
+  doorOpen = false;
+  maze[doorR][doorC] = 0;
+  maze[doorR][doorC - 1] = 0;
+  maze[doorR - 1][doorC] = 0;
 }
 function longestLook() {
   let bestA = 0.6, bestD = 0;
@@ -390,8 +418,8 @@ function makeEnemy(kind, x, y) {
 }
 function spawnFloor() {
   const scaleDist = 8;
-  let spots = shuffle(openCells().filter(([c, r]) => Math.abs(c - 1) + Math.abs(r - 1) > scaleDist));
-  if (spots.length < 6) spots = shuffle(openCells().filter(([c, r]) => Math.abs(c - 1) + Math.abs(r - 1) > 4));
+  let spots = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && Math.abs(c - 1) + Math.abs(r - 1) > scaleDist));
+  if (spots.length < 6) spots = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && Math.abs(c - 1) + Math.abs(r - 1) > 4));
   const stalkers = Math.min(8, 2 + floor);
   const gunners = Math.min(4, Math.max(1, floor - 1));
   enemies = [];
@@ -407,7 +435,7 @@ function spawnFloor() {
   const used = new Set(spots.slice(0, i).map(([c, r]) => c + ',' + r));
   pickups = [];
   const kinds = ['med', 'ammo', 'shell', 'frag', 'ammo', 'med'];
-  const rest = shuffle(openCells().filter(([c, r]) => !used.has(c + ',' + r) && Math.abs(c - 1) + Math.abs(r - 1) > 3));
+  const rest = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && !used.has(c + ',' + r) && Math.abs(c - 1) + Math.abs(r - 1) > 3));
   for (let k = 0; k < kinds.length && k < rest.length; k++) {
     const [c, r] = rest[k];
     pickups.push({ x: (c + 0.5) * CELL, y: (r + 0.5) * CELL, kind: kinds[k] });
@@ -481,7 +509,7 @@ function damageEnemy(e, dmg, cause, sx, sy) {
   e.flash = 0.08;
   const a = Math.atan2(e.y - sy, e.x - sx);
   const kb = cause === 'grenade' ? 40 : cause === 'shotgun' ? 16 : 6;
-  const mv = tryMove(e.x, e.y, Math.cos(a) * kb, Math.sin(a) * kb, ER);
+  const mv = tryMove(e.x, e.y, Math.cos(a) * kb, Math.sin(a) * kb, ER, e);
   e.x = mv.x; e.y = mv.y;
   e.memX = px; e.memY = py;
   e.seenT = Math.max(e.seenT, 2.4);
@@ -625,7 +653,7 @@ function fireShotgun() {
 function swingKnife() {
   if (knifeCd > 0) return;
   knifeCd = 0.34;
-  const lunge = tryMove(px, py, Math.cos(angle) * 16, Math.sin(angle) * 16, PR);
+  const lunge = tryMove(px, py, Math.cos(angle) * 16, Math.sin(angle) * 16, PR, 'player');
   px = lunge.x; py = lunge.y;
   slashLife = 0.1;
   tone(560, 0.05, 'triangle', 0.04, -220);
@@ -644,7 +672,7 @@ function swingKnife() {
   if (!any) spark(px + Math.cos(angle) * 20, py + Math.sin(angle) * 20, '#d7dde8', 3, 20);
 }
 let slashLife = 0;
-function aimMove() {
+function moveVector() {
   let forward = 0, strafe = 0;
   if (down['w'] || down['arrowup']) forward += 1;
   if (down['s'] || down['arrowdown']) forward -= 1;
@@ -652,10 +680,12 @@ function aimMove() {
   if (down['a'] || down['arrowleft']) strafe -= 1;
   if (!forward && !strafe) return null;
   const fx = Math.cos(angle), fy = Math.sin(angle);
-  return {
-    x: fx * forward - fy * strafe,
-    y: fy * forward + fx * strafe
-  };
+  return { x: fx * forward - fy * strafe, y: fy * forward + fx * strafe };
+}
+function standoff(ex, ey, cells) {
+  const dx = ex - px, dy = ey - py;
+  const d = Math.hypot(dx, dy) || 1;
+  return { x: px + (dx / d) * cells * CELL, y: py + (dy / d) * cells * CELL };
 }
 function tryFire() {
   if (phase !== 'play') return;
@@ -677,7 +707,7 @@ function goTo(e, tx, ty, speed, dt, turn) {
   if (dist < 0.8) return;
   if (turn) e.angle = turnToward(e.angle, Math.atan2(dy, dx), 3.4 * dt);
   const step = Math.min(speed * dt, dist);
-  const mv = tryMove(e.x, e.y, (dx / dist) * step, (dy / dist) * step, ER);
+  const mv = tryMove(e.x, e.y, (dx / dist) * step, (dy / dist) * step, ER, e);
   e.x = mv.x; e.y = mv.y;
 }
 function updateEnemy(e, dt) {
@@ -712,19 +742,27 @@ function updateEnemy(e, dt) {
     }
     goTo(e, e.goalX, e.goalY, e.speed * 0.42, dt, true);
   } else if (e.state === 'search') {
-    e.angle = turnToward(e.angle, Math.atan2(e.hearY - e.y, e.hearX - e.x), 4 * dt);
-    goTo(e, e.hearX, e.hearY, e.speed * 0.8, dt, false);
+    let tx = e.hearX, ty = e.hearY;
+    if (e.kind === 'gunner' && Math.hypot(tx - px, ty - py) < GUN_NEAR) {
+      const spot = standoff(e.x, e.y, 4.4);
+      tx = spot.x; ty = spot.y;
+    }
+    e.angle = turnToward(e.angle, Math.atan2(ty - e.y, tx - e.x), 4 * dt);
+    goTo(e, tx, ty, e.speed * 0.8, dt, false);
+  } else if (e.kind === 'gunner') {
+    const dist = Math.hypot(px - e.x, py - e.y);
+    e.angle = turnToward(e.angle, Math.atan2(py - e.y, px - e.x), 8 * dt);
+    if (dist < GUN_NEAR) goTo(e, e.x + (e.x - px), e.y + (e.y - py), e.speed, dt, false);
+    else if (!(dist <= ERANGE && clearLine(e.x, e.y, px, py))) {
+      const spot = standoff(e.x, e.y, 4.4);
+      goTo(e, spot.x, spot.y, e.speed, dt, false);
+    }
   } else {
+    const dist = Math.hypot(px - e.x, py - e.y);
     const destX = e.spotted ? px : e.memX;
     const destY = e.spotted ? py : e.memY;
     e.angle = turnToward(e.angle, Math.atan2(destY - e.y, destX - e.x), (e.spotted ? 8 : 5) * dt);
-    const dist = Math.hypot(px - e.x, py - e.y);
-    if (e.kind === 'gunner' && e.spotted) {
-      if (dist < CELL * 2.6) goTo(e, e.x + (e.x - px), e.y + (e.y - py), e.speed, dt, false);
-      else if (dist > CELL * 5.4) goTo(e, destX, destY, e.speed, dt, false);
-    } else {
-      goTo(e, destX, destY, e.speed, dt, false);
-    }
+    if (dist > BODY_GAP + 3) goTo(e, destX, destY, e.speed, dt, false);
   }
 
   if (e.kind === 'stalker') {
@@ -740,7 +778,7 @@ function updateEnemy(e, dt) {
     } else if (e.hitCd <= 0 && dist < 28 && clearLine(e.x, e.y, px, py)) {
       e.wind = 0.2;
     }
-  } else if (e.spotted) {
+  } else if (Math.hypot(px - e.x, py - e.y) <= ERANGE && clearLine(e.x, e.y, px, py)) {
     e.angle = Math.atan2(py - e.y, px - e.x);
     if (e.hitCd > 0) return;
     if (e.wind <= 0) { e.wind = 0.46; return; }
@@ -910,7 +948,8 @@ function update(dt) {
   tickReload(pistol, dt);
   tickReload(shotgun, dt);
 
-  const wish = aimMove();
+  const wish = moveVector();
+
   if (phase === 'play' && pressed[' '] && dashCd <= 0) {
     const dir = wish || { x: Math.cos(angle), y: Math.sin(angle) };
     const len = Math.hypot(dir.x, dir.y) || 1;
@@ -925,11 +964,11 @@ function update(dt) {
   if (dashT > 0) {
     dashT -= dt;
     trails.push({ x: px, y: py, life: 0.16 });
-    const mv = tryMove(px, py, dashVx * dt, dashVy * dt, PR);
+    const mv = tryMove(px, py, dashVx * dt, dashVy * dt, PR, 'player');
     px = mv.x; py = mv.y;
   } else if (wish) {
     const len = Math.hypot(wish.x, wish.y) || 1;
-    const mv = tryMove(px, py, (wish.x / len) * SPEED * dt, (wish.y / len) * SPEED * dt, PR);
+    const mv = tryMove(px, py, (wish.x / len) * SPEED * dt, (wish.y / len) * SPEED * dt, PR, 'player');
     px = mv.x; py = mv.y;
   }
 
@@ -969,12 +1008,12 @@ function update(dt) {
         if (a.dead || b.dead) continue;
         const dx = b.x - a.x, dy = b.y - a.y;
         const d = Math.hypot(dx, dy);
-        const min = ER * 2.05;
+        const min = BODY_GAP;
         if (d > 0 && d < min) {
           const push = (min - d) * 0.5;
           const ux = dx / d, uy = dy / d;
-          const ma = tryMove(a.x, a.y, -ux * push, -uy * push, ER);
-          const mb = tryMove(b.x, b.y, ux * push, uy * push, ER);
+          const ma = tryMove(a.x, a.y, -ux * push, -uy * push, ER, a);
+          const mb = tryMove(b.x, b.y, ux * push, uy * push, ER, b);
           a.x = ma.x; a.y = ma.y; b.x = mb.x; b.y = mb.y;
         }
       }
@@ -1039,14 +1078,18 @@ function update(dt) {
     proxT = 0.85;
   } else proxPulse = Math.max(0, proxPulse - dt);
 
-  if (phase === 'play' && enemies.length && enemies.every(e => e.dead)) {
-    phase = 'clear';
-    clearT = 1.45;
-    showClearReward();
+  if (phase === 'play' && !doorOpen && enemies.length && enemies.every(e => e.dead)) {
+    doorOpen = true;
+    doorMsg = 3.4;
+    explored[doorR][doorC] = true;
+    tone(523, 0.12, 'sine', 0.05, 80);
+    tone(784, 0.16, 'sine', 0.04, 0);
   }
-  if (phase === 'clear') {
-    clearT -= dt;
-    if (clearT <= 0 && phase === 'clear') { floor++; beginFloor(); }
+  if (doorMsg > 0) doorMsg -= dt;
+  if (phase === 'play' && doorOpen && Math.floor(px / CELL) === doorC && Math.floor(py / CELL) === doorR) {
+    showClearReward();
+    floor++;
+    beginFloor();
   }
   updateHUD();
   pressed = {};
@@ -1089,7 +1132,8 @@ function drawMinimap() {
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (!explored[r][c]) continue;
-      ctx.fillStyle = maze[r][c] === 1 ? '#4e5164' : (visible[r][c] ? '#d9c48a' : '#2a2c38');
+      if (c === doorC && r === doorR) ctx.fillStyle = doorOpen ? '#ffd56a' : '#8a3a3a';
+      else ctx.fillStyle = maze[r][c] === 1 ? '#4e5164' : (visible[r][c] ? '#d9c48a' : '#2a2c38');
       ctx.fillRect(ox + c * s, oy + r * s, s, s);
     }
   }
@@ -1158,6 +1202,24 @@ function draw() {
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         if (explored[r][c] && maze[r][c] === 1) ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+      }
+    }
+    if (doorC >= 0 && explored[doorR][doorC]) {
+      const x = doorC * CELL, y = doorR * CELL;
+      if (doorOpen) {
+        ctx.fillStyle = '#2a2416';
+        ctx.fillRect(x, y, CELL, CELL);
+        ctx.strokeStyle = '#ffd56a';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 2.5, y + 2.5, CELL - 5, CELL - 5);
+      } else {
+        ctx.fillStyle = '#3a3d4c';
+        ctx.fillRect(x, y, CELL, CELL);
+        ctx.fillStyle = '#8a3a3a';
+        ctx.fillRect(x + 4, y + 3, 3, CELL - 6);
+        ctx.fillRect(x + CELL - 7, y + 3, 3, CELL - 6);
+        ctx.fillRect(x + 4, y + 6, CELL - 8, 3);
+        ctx.fillRect(x + 4, y + CELL - 9, CELL - 8, 3);
       }
     }
   }
@@ -1416,13 +1478,13 @@ function draw() {
     ctx.stroke();
   }
 
-  if (phase === 'play' && introT > 0) {
+  if (phase === 'play' && doorMsg > 0) {
+    drawBanner('Door open', 'Walk through it for the next floor');
+  } else if (phase === 'play' && introT > 0) {
     const sub = floor === 1
-      ? 'Gold outline = your sight. Turn with the mouse. The blade makes no sound.'
+      ? 'Walk with the mouse. Left click shoots. Clear the floor to open the door.'
       : 'Floor ' + floor + ' — more of them, and they hit harder.';
     drawBanner(floor === 1 ? 'Look where you shoot' : 'Floor ' + floor, sub);
-  } else if (phase === 'clear') {
-    drawBanner('Floor ' + floor + ' clear', '+200  ·  patched up  ·  next floor');
   }
 }
 
