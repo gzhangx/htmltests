@@ -28,10 +28,11 @@ h1{color:#f0c36a;letter-spacing:3px;font-size:1.45em;margin-bottom:8px}
   display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;
   margin-bottom:8px;font-size:.86em;
 }
-#hud .res{
+#hud .check{
   background:#151c28;border:1px solid #2a3548;border-radius:8px;
-  padding:6px 10px;display:inline-block;
+  padding:6px 10px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
 }
+#hud .check input{accent-color:#7ec8ff}
 #hud strong{color:#f0c36a}
 #hud .blue{color:#7ec8ff}
 #hud .red{color:#ff7a6e}
@@ -92,7 +93,8 @@ button.primary{background:#f0c36a;color:#1a140c;border-color:#f0c36a}
 </div>
 <div id="hud">
   <span class="res">Your core <strong class="blue" id="php">0</strong></span>
-  <span class="res">Enemy core <strong class="red" id="ehp">0</strong></span>
+  <span class="res">Enemy core <strong class="red" id="ehp">?</strong></span>
+  <label class="check"><input type="checkbox" id="seeEnemy"> Show enemy interiors</label>
 </div>
 <div id="buildcost">Next miner needs <strong id="minerm">28</strong> minerals to build and <strong class="need" id="minere">7</strong>/s electric to run.</div>
 <canvas id="cv"></canvas>
@@ -131,6 +133,10 @@ let nodes, beams, devices, shots, fx, debris, veins;
 let metal, energy, tool, hover, over;
 let mx = 0, my = 0, playing, aiClock, aiShot, mineRate;
 
+function seeEnemy() {
+  const box = document.getElementById('seeEnemy');
+  return (box && box.checked) || !playing;
+}
 function nk(gx, gy) { return gx + ',' + gy; }
 function parseN(k) { const [a, b] = k.split(',').map(Number); return { gx: a, gy: b }; }
 function bk(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
@@ -449,7 +455,7 @@ function tickEcon(dt) {
       metal[team] += take;
       gained += rate;
       m.active = true;
-      if (Math.random() < 0.12) {
+      if (team === P && Math.random() < 0.12) {
         const g = groundAt(cx);
         burst(cx + (Math.random() - 0.5) * 16, g - 4, '#e6c35a', 2);
       }
@@ -789,7 +795,7 @@ function update(dt) {
   document.getElementById('powb').style.width = (100 * energy[P] / Math.max(1, cap)) + '%';
   refreshCostLine();
   document.getElementById('php').innerText = pc ? Math.max(0, Math.ceil(pc.hp)) : 0;
-  document.getElementById('ehp').innerText = ec ? Math.max(0, Math.ceil(ec.hp)) : 0;
+  document.getElementById('ehp').innerText = seeEnemy() ? (ec ? Math.max(0, Math.ceil(ec.hp)) : 0) : '?';
 }
 
 function updateFx(dt) {
@@ -879,7 +885,24 @@ function drawBeams() {
 }
 
 function drawDevices() {
+  const reveal = seeEnemy();
+  if (!reveal) {
+    for (let gy = 0; gy < MAXGY; gy++) {
+      for (let gx = 0; gx < MAXGX; gx++) {
+        if (!roomReady(gx, gy, E)) continue;
+        const [x1, y1] = pos(gx, gy);
+        const [x2, y2] = pos(gx + 1, gy + 1);
+        const x = Math.min(x1, x2) + 3, y = Math.min(y1, y2) + 3;
+        ctx.fillStyle = 'rgba(28, 22, 20, 0.72)';
+        ctx.strokeStyle = 'rgba(180, 110, 90, 0.35)';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(x, y, CELL - 6, CELL - 6);
+        ctx.strokeRect(x, y, CELL - 6, CELL - 6);
+      }
+    }
+  }
   for (const d of devices) {
+    if (d.team === E && !reveal) continue;
     const [x, y] = deviceCenter(d);
     ctx.save();
     ctx.translate(x, y);
@@ -969,6 +992,7 @@ function drawShots() {
     ctx.globalAlpha = 1;
   }
   for (const d of debris) {
+    if (d.team === E && d.kind === 'dev' && !seeEnemy()) continue;
     ctx.save();
     ctx.translate(d.x, d.y);
     ctx.rotate(d.rot);
