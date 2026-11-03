@@ -61,6 +61,7 @@ canvas{
   <span>Combo <strong id="combo">x1</strong></span>
   <span>Hostiles <strong id="hostiles">0</strong></span>
   <span>Guns <strong id="gunposts">0</strong></span>
+  <span>Walls <strong id="walls">0</strong></span>
   <span>Best <strong id="best">0</strong></span>
 </div>
 <div id="weapons">
@@ -71,8 +72,8 @@ canvas{
   <span id="wD">Dash</span>
 </div>
 <canvas id="cv" tabindex="0"></canvas>
-<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload<br>
-Walls block sight, shots, and blasts. The door stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Guns shoot. Green posts make health, gold makes shells, blue makes rounds.</p>
+<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door<br>
+Walls block sight, shots, and blasts. The exit stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Guns shoot. Green posts make health, gold makes shells, blue makes rounds. A door costs 2 wall pieces. You carry a limited stack; past that, the broken cell drops a piece on the ground and stays open. Your door lets you through when it is open. Enemies never walk through it.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
 
@@ -82,6 +83,8 @@ const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 
 const MAP = 8, CELL = 24;
+const WALL_CAP = 10;
+const DOOR_COST = 2;
 const COLS = 31 * MAP + 1, ROWS = 21 * MAP + 1;
 const VIEW_W = 31 * CELL, VIEW_H = 21 * CELL;
 const PR = 6.4, ER = 6.2;
@@ -111,6 +114,10 @@ let mouseX = 0, mouseY = 0, viewMouseX = 0, viewMouseY = 0, mouseIn = false, mou
 let camX = 0, camY = 0;
 let doorC = -1, doorR = -1, doorOpen = false, doorMsg = 0;
 let posts = [];
+let wallPieces = 0, breakCd = 0, buildAim = null;
+let playerDoors = [];
+let doorMap = new Map();
+let builtWalls = new Set();
 let aimPreview = null, grenadePreview = null;
 const down = {};
 let pressed = {};
@@ -173,20 +180,43 @@ function turnToward(current, target, maxRot) {
   if (Math.abs(diff) <= maxRot) return target;
   return current + Math.sign(diff) * maxRot;
 }
-function solid(c, r) {
-  if (r < 0 || c < 0 || r >= ROWS || c >= COLS) return true;
+function doorKey(c, r) { return r * COLS + c; }
+function doorAt(c, r) { return doorMap.get(doorKey(c, r)) || null; }
+function outOfBounds(c, r) {
+  return r < 0 || c < 0 || r >= ROWS || c >= COLS;
+}
+function blocksSight(c, r) {
+  if (outOfBounds(c, r)) return true;
   if (c === doorC && r === doorR && !doorOpen) return true;
-  return maze[r][c] === 1;
+  if (maze[r][c] === 1) return true;
+  const d = doorAt(c, r);
+  return !!(d && !d.open);
+}
+function blocksMove(c, r, self) {
+  if (outOfBounds(c, r)) return true;
+  if (c === doorC && r === doorR && !doorOpen) return true;
+  if (maze[r][c] === 1) return true;
+  const d = doorAt(c, r);
+  if (!d) return false;
+  if (self === 'player') return !d.open;
+  return true;
+}
+function solid(c, r) {
+  return blocksSight(c, r);
 }
 function isOpen(c, r) {
-  return !solid(c, r);
+  return !blocksMove(c, r, 'enemy');
 }
-function hitsWall(x, y, radius) {
+function cellBlocks(c, r, self) {
+  if (self === 'player' || (self && typeof self === 'object')) return blocksMove(c, r, self === 'player' ? 'player' : self);
+  return blocksSight(c, r);
+}
+function hitsWall(x, y, radius, self) {
   const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
   const r2 = radius * radius;
   for (let row = cy - 1; row <= cy + 1; row++) {
     for (let col = cx - 1; col <= cx + 1; col++) {
-      if (!solid(col, row)) continue;
+      if (!cellBlocks(col, row, self)) continue;
       const closestX = Math.max(col * CELL, Math.min(x, (col + 1) * CELL));
       const closestY = Math.max(row * CELL, Math.min(y, (row + 1) * CELL));
       const dx = x - closestX, dy = y - closestY;
@@ -357,6 +387,9 @@ function syncMouse() {
 }
 
 function generateMaze() {
+  playerDoors = [];
+  doorMap = new Map();
+  builtWalls = new Set();
   maze = Array.from({ length: ROWS }, () => Array(COLS).fill(1));
   const stack = [[1, 1]];
   maze[1][1] = 0;
@@ -687,6 +720,172 @@ function updatePosts(dt) {
       p.build += dt / REBUILD_TIME;
       if (p.build >= 1) claimPost(p);
     } else p.build = Math.max(0, p.build - dt * 2);
+  }
+}
+function rejectBuild(msg) {
+  tone(90, 0.04, 'square', 0.03, 0);
+  if (msg) floatText(px, py - 16, msg, '#d7d2c6');
+}
+function cellInFront() {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const pc = Math.floor(px / CELL), pr = Math.floor(py / CELL);
+  for (let dist = 6; dist <= CELL * 1.35; dist += 3) {
+    const c = Math.floor((px + cos * dist) / CELL);
+    const r = Math.floor((py + sin * dist) / CELL);
+    if (c !== pc || r !== pr) return { c, r };
+  }
+  return null;
+}
+function canBreak(c, r) {
+  if (r <= 0 || c <= 0 || r >= ROWS - 1 || c >= COLS - 1) return false;
+  if (c === doorC && r === doorR) return false;
+  if (maze[r][c] === 1) return true;
+  return !!doorAt(c, r);
+}
+function cellOccupied(c, r) {
+  if (Math.floor(px / CELL) === c && Math.floor(py / CELL) === r) return true;
+  for (const e of enemies) {
+    if (!e.dead && Math.floor(e.x / CELL) === c && Math.floor(e.y / CELL) === r) return true;
+  }
+  for (const p of posts) {
+    if (Math.floor(p.x / CELL) === c && Math.floor(p.y / CELL) === r) return true;
+  }
+  for (const o of pickups) {
+    if (Math.floor(o.x / CELL) === c && Math.floor(o.y / CELL) === r) return true;
+  }
+  return false;
+}
+function canBuildOn(c, r) {
+  if (r <= 0 || c <= 0 || r >= ROWS - 1 || c >= COLS - 1) return false;
+  if (c === doorC && r === doorR) return false;
+  if (maze[r][c] !== 0 || doorAt(c, r)) return false;
+  return !cellOccupied(c, r);
+}
+function sealsActor(c, r, asDoor) {
+  const prev = maze[r][c];
+  let added = null;
+  if (asDoor) {
+    added = { c, r, open: false };
+    playerDoors.push(added);
+    doorMap.set(doorKey(c, r), added);
+  } else maze[r][c] = 1;
+  let trapped = hitsWall(px, py, PR, 'player');
+  if (!trapped) {
+    for (const e of enemies) {
+      if (e.dead) continue;
+      if (hitsWall(e.x, e.y, ER, e)) { trapped = true; break; }
+    }
+  }
+  if (asDoor) {
+    playerDoors.pop();
+    doorMap.delete(doorKey(c, r));
+  } else maze[r][c] = prev;
+  return trapped;
+}
+function invalidatePaths() {
+  for (const e of enemies) e.pathFromC = -999;
+}
+function givePieces(n, x, y) {
+  let stored = 0;
+  while (stored < n && wallPieces < WALL_CAP) { wallPieces++; stored++; }
+  const dropped = n - stored;
+  for (let i = 0; i < dropped; i++) {
+    pickups.push({ x: x + (dropped > 1 ? (i === 0 ? -5 : 5) : 0), y, kind: 'wall' });
+  }
+  return { stored, dropped };
+}
+function breakCell(c, r) {
+  const x = (c + 0.5) * CELL, y = (r + 0.5) * CELL;
+  const door = doorAt(c, r);
+  const n = door ? DOOR_COST : 1;
+  if (door) {
+    playerDoors = playerDoors.filter(d => d !== door);
+    doorMap.delete(doorKey(c, r));
+  } else {
+    maze[r][c] = 0;
+    builtWalls.delete(c + ',' + r);
+  }
+  explored[r][c] = true;
+  const got = givePieces(n, x, y);
+  spark(x, y, '#c8c4b8', 10, 70);
+  noise(0.08, 0.08, 500);
+  tone(140, 0.06, 'square', 0.04, -40);
+  floatText(x, y - 12, got.dropped && !got.stored ? 'FULL' : wallPieces + '/' + WALL_CAP, '#d7d2c6');
+  hear(x, y, CELL * 5);
+  invalidatePaths();
+}
+function placeWall(c, r) {
+  if (wallPieces < 1) { rejectBuild('NO PIECES'); return; }
+  if (!canBuildOn(c, r)) { rejectBuild(''); return; }
+  if (sealsActor(c, r, false)) { rejectBuild('TOO CLOSE'); return; }
+  wallPieces--;
+  maze[r][c] = 1;
+  builtWalls.add(c + ',' + r);
+  explored[r][c] = true;
+  const x = (c + 0.5) * CELL, y = (r + 0.5) * CELL;
+  spark(x, y, '#ffd56a', 8, 50);
+  tone(220, 0.05, 'square', 0.04, 40);
+  floatText(x, y - 10, 'WALL', '#d7d2c6');
+  invalidatePaths();
+}
+function placeDoor(c, r) {
+  if (wallPieces < DOOR_COST) { rejectBuild('NEED 2'); return; }
+  if (!canBuildOn(c, r)) { rejectBuild(''); return; }
+  if (sealsActor(c, r, true)) { rejectBuild('TOO CLOSE'); return; }
+  wallPieces -= DOOR_COST;
+  const d = { c, r, open: false };
+  playerDoors.push(d);
+  doorMap.set(doorKey(c, r), d);
+  explored[r][c] = true;
+  const x = (c + 0.5) * CELL, y = (r + 0.5) * CELL;
+  spark(x, y, '#9fd4ff', 8, 50);
+  tone(180, 0.06, 'square', 0.04, 30);
+  floatText(x, y - 10, 'DOOR', '#9fd4ff');
+  invalidatePaths();
+}
+function nearestOwnDoor() {
+  const pc = Math.floor(px / CELL), pr = Math.floor(py / CELL);
+  let best = null, bestD = CELL * 1.6;
+  for (const d of playerDoors) {
+    const dist = Math.hypot((d.c + 0.5) * CELL - px, (d.r + 0.5) * CELL - py);
+    const adj = Math.max(Math.abs(d.c - pc), Math.abs(d.r - pr)) <= 1;
+    if (!adj || dist >= bestD) continue;
+    best = d;
+    bestD = dist;
+  }
+  return best;
+}
+function toggleDoor(d) {
+  if (d.open && Math.floor(px / CELL) === d.c && Math.floor(py / CELL) === d.r) {
+    rejectBuild('STEP OUT');
+    return;
+  }
+  d.open = !d.open;
+  if (!d.open && hitsWall(px, py, PR, 'player')) {
+    d.open = true;
+    rejectBuild('TOO CLOSE');
+    return;
+  }
+  const x = (d.c + 0.5) * CELL, y = (d.r + 0.5) * CELL;
+  floatText(x, y - 8, d.open ? 'OPEN' : 'SHUT', '#9fd4ff');
+  tone(d.open ? 520 : 240, 0.05, 'square', 0.035, d.open ? 80 : -40);
+}
+function tickBuild() {
+  buildAim = null;
+  if (phase !== 'play') return;
+  const cell = cellInFront();
+  if (cell) {
+    buildAim = cell;
+    if (down['b'] && breakCd <= 0 && canBreak(cell.c, cell.r)) {
+      breakCell(cell.c, cell.r);
+      breakCd = 0.28;
+    } else if (pressed['q']) placeWall(cell.c, cell.r);
+    else if (pressed['f']) placeDoor(cell.c, cell.r);
+  }
+  if (pressed['v']) {
+    const d = nearestOwnDoor();
+    if (d) toggleDoor(d);
+    else rejectBuild('');
   }
 }
 
@@ -1089,7 +1288,11 @@ function grantPickup(p) {
     if (grenades >= GRENADE_CAP) return false;
     grenades++;
     floatText(px, py - 16, '+frag', '#ffb27a');
-  }
+  } else if (p.kind === 'wall') {
+    if (wallPieces >= WALL_CAP) return false;
+    wallPieces++;
+    floatText(px, py - 16, 'WALL ' + wallPieces + '/' + WALL_CAP, '#d7d2c6');
+  } else return false;
   tone(620, 0.06, 'sine', 0.04, 180);
   return true;
 }
@@ -1158,6 +1361,7 @@ function updateHUD() {
   comboEl.classList.toggle('hot', combo > 1);
   document.getElementById('hostiles').textContent = enemies.filter(e => !e.dead).length;
   document.getElementById('gunposts').textContent = posts.filter(p => p.team === 'enemy' && !p.wrecked && p.kind === 'gun').length;
+  document.getElementById('walls').textContent = wallPieces + '/' + WALL_CAP;
   document.getElementById('best').textContent = best;
   const labels = [
     '1 Blade' + (knifeCd > 0 ? ' …' : ''),
@@ -1209,6 +1413,7 @@ function newGame() {
   weapon = 1; grenades = 2;
   dashCd = 0; dashT = 0; shake = 0; hurtFlash = 0; iframes = 0;
   knifeCd = 0; grenadeCd = 0; alertSnd = 0; proxT = 0; proxPulse = 0;
+  wallPieces = 0; breakCd = 0; buildAim = null;
   introT = 0; clearT = 0; slashLife = 0;
   pistol = { mag: 8, magSize: 8, reserve: 24, reloadT: 0, reloadDur: 0.85, cd: 0 };
   shotgun = { mag: 2, magSize: 2, reserve: 6, reloadT: 0, reloadDur: 1.15, cd: 0 };
@@ -1227,7 +1432,7 @@ function update(dt) {
     if (weapon === 1) startReload(pistol);
     if (weapon === 2) startReload(shotgun);
   }
-  if (phase === 'dead') { pressed = {}; updateHUD(); return; }
+  if (phase === 'dead') { pressed = {}; buildAim = null; updateHUD(); return; }
 
   syncMouse();
   if (mouseIn) angle = Math.atan2(mouseY - py, mouseX - px);
@@ -1236,6 +1441,7 @@ function update(dt) {
   iframes = Math.max(0, iframes - dt);
   dashCd = Math.max(0, dashCd - dt);
   knifeCd = Math.max(0, knifeCd - dt);
+  breakCd = Math.max(0, breakCd - dt);
   grenadeCd = Math.max(0, grenadeCd - dt);
   pistol.cd = Math.max(0, pistol.cd - dt);
   shotgun.cd = Math.max(0, shotgun.cd - dt);
@@ -1271,6 +1477,7 @@ function update(dt) {
     px = mv.x; py = mv.y;
   }
 
+  tickBuild();
   if (mouseDown) tryFire();
 
   for (let i = nades.length - 1; i >= 0; i--) {
@@ -1435,7 +1642,11 @@ function drawMinimap() {
     for (let c = 0; c < COLS; c++) {
       if (!explored[r][c]) continue;
       if (c === doorC && r === doorR) ctx.fillStyle = doorOpen ? '#ffd56a' : '#8a3a3a';
-      else ctx.fillStyle = maze[r][c] === 1 ? '#4e5164' : (visible[r][c] ? '#d9c48a' : '#2a2c38');
+      else if (maze[r][c] === 1) ctx.fillStyle = builtWalls.has(c + ',' + r) ? '#8a7048' : '#4e5164';
+      else {
+        const pd = doorAt(c, r);
+        ctx.fillStyle = pd ? (pd.open ? '#7eb6e8' : '#35597a') : (visible[r][c] ? '#d9c48a' : '#2a2c38');
+      }
       ctx.fillRect(ox + c * s, oy + r * s, s, s);
     }
   }
@@ -1480,6 +1691,11 @@ function drawPickup(p) {
   } else if (p.kind === 'shell') {
     ctx.fillStyle = '#ffd56a';
     ctx.fillRect(-4, -4, 8, 8);
+  } else if (p.kind === 'wall') {
+    ctx.fillStyle = '#c8c4b8';
+    ctx.fillRect(-5, -5, 10, 10);
+    ctx.fillStyle = '#3a3d4c';
+    ctx.fillRect(-2, -2, 4, 4);
   } else {
     ctx.fillStyle = '#ff8a3d';
     ctx.beginPath();
@@ -1583,6 +1799,63 @@ function drawOwnedMarkers() {
     ctx.fill();
   }
 }
+function drawPlayerDoors(c0, r0, c1, r1) {
+  const near = nearestOwnDoor();
+  for (const d of playerDoors) {
+    if (d.c < c0 || d.c > c1 || d.r < r0 || d.r > r1) continue;
+    if (!explored[d.r][d.c]) continue;
+    const x = d.c * CELL, y = d.r * CELL;
+    if (!d.open) {
+      ctx.fillStyle = '#243044';
+      ctx.fillRect(x, y, CELL, CELL);
+      ctx.fillStyle = '#7eb6e8';
+      ctx.fillRect(x + 4, y + 3, 3, CELL - 6);
+      ctx.fillRect(x + CELL - 7, y + 3, 3, CELL - 6);
+      ctx.fillRect(x + 4, y + CELL / 2 - 1.5, CELL - 8, 3);
+    } else {
+      ctx.strokeStyle = '#7eb6e8';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 2.5, y + 2.5, CELL - 5, CELL - 5);
+      ctx.fillStyle = '#7eb6e8';
+      ctx.fillRect(x + 4, y + 4, 3, 3);
+      ctx.fillRect(x + CELL - 7, y + 4, 3, 3);
+      ctx.fillRect(x + 4, y + CELL - 7, 3, 3);
+      ctx.fillRect(x + CELL - 7, y + CELL - 7, 3, 3);
+    }
+    if (d === near) {
+      ctx.save();
+      ctx.fillStyle = '#9fd4ff';
+      ctx.font = '700 10px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = y - camY < 16 ? 'top' : 'bottom';
+      ctx.fillText(d.open ? 'V shut' : 'V open', x + CELL / 2, y - camY < 16 ? y + CELL + 2 : y - 2);
+      ctx.restore();
+    }
+  }
+}
+function drawBuildAim() {
+  if (!buildAim) return;
+  const c = buildAim.c, r = buildAim.r;
+  const x = c * CELL, y = r * CELL;
+  const br = canBreak(c, r);
+  const site = !br && canBuildOn(c, r);
+  ctx.fillStyle = br ? 'rgba(255,120,90,0.38)' : site ? 'rgba(255,213,106,0.28)' : 'rgba(255,255,255,0.08)';
+  ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+  if (!explored[r][c] && !br) return;
+  let label = '';
+  if (br) {
+    const d = doorAt(c, r);
+    label = d ? ('B break  V ' + (d.open ? 'shut' : 'open')) : 'B break';
+  } else if (site) label = 'Q wall   F door';
+  if (!label) return;
+  ctx.save();
+  ctx.fillStyle = '#ffd56a';
+  ctx.font = '700 10px Segoe UI';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = y - camY < 16 ? 'top' : 'bottom';
+  ctx.fillText(label, x + CELL / 2, y - camY < 16 ? y + CELL + 2 : y - 2);
+  ctx.restore();
+}
 function draw() {
   placeCamera();
   if (mouseIn) {
@@ -1617,10 +1890,11 @@ function draw() {
   drawPostCones();
 
   if (maze) {
-    ctx.fillStyle = '#3a3d4c';
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        if (explored[r][c] && maze[r][c] === 1) ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+        if (!explored[r][c] || maze[r][c] !== 1) continue;
+        ctx.fillStyle = builtWalls.has(c + ',' + r) ? '#6a5e48' : '#3a3d4c';
+        ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
       }
     }
     if (doorC >= 0 && explored[doorR][doorC]) {
@@ -1641,6 +1915,8 @@ function draw() {
         ctx.fillRect(x + 4, y + CELL - 9, CELL - 8, 3);
       }
     }
+    drawPlayerDoors(c0, r0, c1, r1);
+    drawBuildAim();
   }
 
   for (const p of pickups) drawPickup(p);
@@ -1904,7 +2180,7 @@ function draw() {
     drawBanner('Door open', 'Walk through it for the next floor');
   } else if (phase === 'play' && introT > 0) {
     const sub = floor === 1
-      ? 'Hold E to claim a post. Guns shoot. Green heals, gold shells, blue rounds.'
+      ? 'B breaks a wall. Q places it. F spends 2 for a door. V opens and shuts it.'
       : 'Floor ' + floor + ' — more of them, and they hit harder.';
     drawBanner(floor === 1 ? 'Look where you shoot' : 'Floor ' + floor, sub);
   }
@@ -1919,7 +2195,7 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-const GAME_KEYS = new Set(['w', 'a', 's', 'd', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'g', 'r', '1', '2', '3']);
+const GAME_KEYS = new Set(['w', 'a', 's', 'd', 'e', 'b', 'q', 'f', 'v', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'g', 'r', '1', '2', '3']);
 window.addEventListener('keydown', e => {
   ensureAudio();
   const k = e.key.toLowerCase();
