@@ -73,7 +73,7 @@ canvas{
 </div>
 <canvas id="cv" tabindex="0"></canvas>
 <p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door<br>
-Walls block sight, shots, and blasts. The exit stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Guns shoot. Green posts make health, gold makes shells, blue makes rounds. A door costs 2 wall pieces. You carry a limited stack; past that, the broken cell drops a piece on the ground and stays open. Your door lets you through when it is open. Enemies never walk through it.</p>
+Walls block sight, shots, and blasts. The exit stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Every post shoots. Green posts also make health, gold makes shells, blue makes rounds. The maze starts small, then doubles each floor up to four times across. A door costs 2 wall pieces. You carry a limited stack; past that, the broken cell drops a piece on the ground and stays open. Your door lets you through when it is open. Enemies never walk through it.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
 
@@ -82,11 +82,12 @@ Walls block sight, shots, and blasts. The exit stays shut until every enemy is d
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 
-const MAP = 8, CELL = 24;
+const CELL = 24;
 const WALL_CAP = 10;
 const DOOR_COST = 2;
-const COLS = 31 * MAP + 1, ROWS = 21 * MAP + 1;
-const VIEW_W = 31 * CELL, VIEW_H = 21 * CELL;
+const BASE_COLS = 31, BASE_ROWS = 21;
+let COLS = BASE_COLS, ROWS = BASE_ROWS, mapScale = 1;
+const VIEW_W = BASE_COLS * CELL, VIEW_H = BASE_ROWS * CELL;
 const PR = 6.4, ER = 6.2;
 const SPEED = 162;
 const FOV = 94 * Math.PI / 180;
@@ -341,10 +342,11 @@ let bfsSeen, bfsPrevC, bfsPrevR, bfsGen = 1;
 function nextStep(sc, sr, tc, tr) {
   if (sc === tc && sr === tr) return null;
   if (!isOpen(tc, tr) || !isOpen(sc, sr)) return null;
-  if (!bfsSeen) {
+  if (!bfsSeen || bfsSeen.length !== ROWS || bfsSeen[0].length !== COLS) {
     bfsSeen = Array.from({ length: ROWS }, () => new Uint32Array(COLS));
     bfsPrevC = Array.from({ length: ROWS }, () => new Int16Array(COLS));
     bfsPrevR = Array.from({ length: ROWS }, () => new Int16Array(COLS));
+    bfsGen = 1;
   }
   if (++bfsGen >= 0x7fffffff) {
     bfsGen = 1;
@@ -386,6 +388,16 @@ function syncMouse() {
   mouseY = viewMouseY + camY;
 }
 
+function applyMapScale(level) {
+  const scale = level <= 1 ? 1 : level === 2 ? 2 : 4;
+  const cols = scale === 1 ? BASE_COLS : BASE_COLS * scale - 1;
+  const rows = scale === 1 ? BASE_ROWS : BASE_ROWS * scale - 1;
+  mapScale = scale;
+  if (cols === COLS && rows === ROWS) return;
+  COLS = cols;
+  ROWS = rows;
+  bfsSeen = null;
+}
 function generateMaze() {
   playerDoors = [];
   doorMap = new Map();
@@ -409,7 +421,7 @@ function generateMaze() {
     maze[pick[1]][pick[0]] = 0;
     stack.push([pick[0], pick[1]]);
   }
-  const rooms = 32 + Math.floor(Math.random() * 20);
+  const rooms = (mapScale === 1 ? 4 : 8 * mapScale) + Math.floor(Math.random() * (mapScale === 1 ? 3 : 6 * mapScale));
   for (let i = 0; i < rooms; i++) {
     const w = 3 + Math.floor(Math.random() * 3);
     const h = 3 + Math.floor(Math.random() * 2);
@@ -420,8 +432,9 @@ function generateMaze() {
     }
   }
   let knocked = 0;
-  const target = 90 + Math.floor(Math.random() * 40);
-  for (let tries = 0; tries < 2500 && knocked < target; tries++) {
+  const target = (mapScale === 1 ? 12 : 28 * mapScale) + Math.floor(Math.random() * (mapScale === 1 ? 8 : 12 * mapScale));
+  const knockTries = mapScale === 1 ? 500 : 1200 * mapScale;
+  for (let tries = 0; tries < knockTries && knocked < target; tries++) {
     const c = 2 + Math.floor(Math.random() * (COLS - 4));
     const r = 2 + Math.floor(Math.random() * (ROWS - 4));
     if (maze[r][c] !== 1) continue;
@@ -495,8 +508,8 @@ function spawnFloor() {
   const scaleDist = 8;
   let spots = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && Math.abs(c - 1) + Math.abs(r - 1) > scaleDist));
   if (spots.length < 6) spots = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && Math.abs(c - 1) + Math.abs(r - 1) > 4));
-  const stalkers = Math.min(36, (2 + floor) * 4);
-  const gunners = Math.min(12, 2 + floor);
+  const stalkers = Math.min(mapScale === 1 ? 8 : 8 * mapScale, (2 + floor) * mapScale);
+  const gunners = Math.min(mapScale === 1 ? 4 : 3 * mapScale, Math.max(1, (floor - 1) * mapScale));
   enemies = [];
   let i = 0;
   for (let n = 0; n < stalkers && i < spots.length; n++, i++) {
@@ -510,8 +523,9 @@ function spawnFloor() {
   const used = new Set(spots.slice(0, i).map(([c, r]) => c + ',' + r));
   pickups = [];
   const kinds = ['med', 'ammo', 'shell', 'frag', 'ammo', 'med', 'med', 'shell', 'ammo', 'frag', 'ammo', 'med'];
+  const pickupCount = mapScale === 1 ? 6 : Math.min(kinds.length, 6 + mapScale * 2);
   const rest = shuffle(openCells().filter(([c, r]) => !(c === doorC && r === doorR) && !used.has(c + ',' + r) && Math.abs(c - 1) + Math.abs(r - 1) > 3));
-  for (let k = 0; k < kinds.length && k < rest.length; k++) {
+  for (let k = 0; k < pickupCount && k < rest.length; k++) {
     const [c, r] = rest[k];
     pickups.push({ x: (c + 0.5) * CELL, y: (r + 0.5) * CELL, kind: kinds[k] });
     used.add(c + ',' + r);
@@ -540,14 +554,17 @@ function makePost(c, r, kind) {
   };
 }
 function spawnPosts(blocked) {
-  let spots = shuffle(postSpots(18).filter(([c, r]) => !blocked.has(c + ',' + r)));
-  if (spots.length < 4) spots = shuffle(postSpots(8).filter(([c, r]) => !blocked.has(c + ',' + r)));
-  const count = Math.min(24, 8 + floor * 2);
-  const mix = ['gun', 'gun', 'med', 'shell', 'ammo'];
+  const far = mapScale === 1 ? 11 : 8 * mapScale;
+  const near = mapScale === 1 ? 6 : 4 * mapScale;
+  let spots = shuffle(postSpots(far).filter(([c, r]) => !blocked.has(c + ',' + r)));
+  if (spots.length < 4) spots = shuffle(postSpots(near).filter(([c, r]) => !blocked.has(c + ',' + r)));
+  const count = Math.min(4 * mapScale, Math.max(4, 2 * mapScale + floor - 1));
+  const mix = ['gun', 'med', 'shell', 'ammo'];
+  const sep = mapScale === 1 ? 5 : 6 * mapScale;
   posts = [];
   for (const [c, r] of spots) {
     if (posts.length >= count) break;
-    if (posts.some(p => Math.abs(Math.floor(p.x / CELL) - c) + Math.abs(Math.floor(p.y / CELL) - r) < 12)) continue;
+    if (posts.some(p => Math.abs(Math.floor(p.x / CELL) - c) + Math.abs(Math.floor(p.y / CELL) - r) < sep)) continue;
     posts.push(makePost(c, r, mix[posts.length % mix.length]));
   }
 }
@@ -689,10 +706,8 @@ function tickEnemyMed(p, dt) {
 function updateLivePost(p, dt) {
   p.flash = Math.max(0, p.flash - dt);
   if (p.kind !== 'gun') {
-    p.angle += dt * 0.35;
     if (p.team === 'player') tickSupply(p, dt);
     else if (p.kind === 'med') tickEnemyMed(p, dt);
-    return;
   }
   p.gap = Math.max(0, p.gap - dt);
   p.cool = Math.max(0, p.cool - dt);
@@ -1326,7 +1341,7 @@ function refreshVision() {
     p.seenPoly = null;
     p.visible = playerSees(p.x, p.y);
     if (p.visible) p.known = true;
-    if (!p.wrecked && p.kind === 'gun' && (p.team === 'player' || p.visible)) {
+    if (!p.wrecked && (p.team === 'player' || p.visible)) {
       p.seenPoly = makePoly(p.x, p.y, p.angle, MG_FOV, MG_RANGE, 1);
     }
     if (p.team !== 'player') continue;
@@ -1360,7 +1375,7 @@ function updateHUD() {
   comboEl.textContent = 'x' + Math.max(1, combo);
   comboEl.classList.toggle('hot', combo > 1);
   document.getElementById('hostiles').textContent = enemies.filter(e => !e.dead).length;
-  document.getElementById('gunposts').textContent = posts.filter(p => p.team === 'enemy' && !p.wrecked && p.kind === 'gun').length;
+  document.getElementById('gunposts').textContent = posts.filter(p => p.team === 'enemy' && !p.wrecked).length;
   document.getElementById('walls').textContent = wallPieces + '/' + WALL_CAP;
   document.getElementById('best').textContent = best;
   const labels = [
@@ -1389,6 +1404,7 @@ function showClearReward() {
   tone(784, 0.16, 'sine', 0.04, 0);
 }
 function beginFloor() {
+  applyMapScale(floor);
   generateMaze();
   explored = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
   visible = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
@@ -1734,13 +1750,11 @@ function drawPosts() {
     ctx.rotate(p.angle);
     ctx.fillStyle = p.flash > 0 ? '#fff' : col.body;
     ctx.fillRect(-7, -7, 14, 14);
-    if (p.kind === 'gun') {
-      ctx.fillStyle = col.mark;
-      ctx.fillRect(1, -2.2, p.wrecked ? 5 : 13, 4.4);
-      if (p.flash > 0 && !p.wrecked) {
-        ctx.fillStyle = '#fff6d0';
-        ctx.fillRect(14, -1.5, 5, 3);
-      }
+    ctx.fillStyle = col.mark;
+    ctx.fillRect(1, -2.2, p.wrecked ? 5 : 13, 4.4);
+    if (p.flash > 0 && !p.wrecked) {
+      ctx.fillStyle = '#fff6d0';
+      ctx.fillRect(14, -1.5, 5, 3);
     }
     ctx.restore();
     if (p.kind !== 'gun' && !p.wrecked) {
@@ -2181,7 +2195,7 @@ function draw() {
   } else if (phase === 'play' && introT > 0) {
     const sub = floor === 1
       ? 'B breaks a wall. Q places it. F spends 2 for a door. V opens and shuts it.'
-      : 'Floor ' + floor + ' — more of them, and they hit harder.';
+      : 'Floor ' + floor + ' — ' + (mapScale === 2 ? 'twice' : 'four times') + ' the maze, and they hit harder.';
     drawBanner(floor === 1 ? 'Look where you shoot' : 'Floor ' + floor, sub);
   }
 }
