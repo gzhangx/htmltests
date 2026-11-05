@@ -72,7 +72,7 @@ canvas{
   <span id="wD">Dash</span>
 </div>
 <canvas id="cv" tabindex="0"></canvas>
-<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door<br>
+<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>click a wall beside you</b> to break it · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door<br>
 Walls block sight, shots, and blasts. The exit stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Every post shoots. Green posts also make health, gold makes shells, blue makes rounds. The maze starts small, then doubles each floor up to four times across. A door costs 2 wall pieces. You carry a limited stack; past that, the broken cell drops a piece on the ground and stays open. Your door lets you through when it is open. Enemies never walk through it.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
@@ -757,6 +757,24 @@ function canBreak(c, r) {
   if (maze[r][c] === 1) return true;
   return !!doorAt(c, r);
 }
+function adjacentBreakableAt(x, y) {
+  const c = Math.floor(x / CELL);
+  const r = Math.floor(y / CELL);
+  const pc = Math.floor(px / CELL);
+  const pr = Math.floor(py / CELL);
+  if (Math.max(Math.abs(c - pc), Math.abs(r - pr)) > 1) return null;
+  if (!canBreak(c, r)) return null;
+  return { c, r };
+}
+function tryBreakClickedWall() {
+  const cell = adjacentBreakableAt(mouseX, mouseY);
+  if (!cell) return false;
+  if (breakCd <= 0) {
+    breakCell(cell.c, cell.r);
+    breakCd = 0.28;
+  }
+  return true;
+}
 function cellOccupied(c, r) {
   if (Math.floor(px / CELL) === c && Math.floor(py / CELL) === r) return true;
   for (const e of enemies) {
@@ -1170,6 +1188,7 @@ function standoff(ex, ey, cells) {
 }
 function tryFire() {
   if (phase !== 'play') return;
+  if (tryBreakClickedWall()) return;
   if (weapon === 0) swingKnife();
   else if (weapon === 1) firePistol();
   else fireShotgun();
