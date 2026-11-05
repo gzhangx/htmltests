@@ -111,7 +111,7 @@ let iframes, shake, hurtFlash, introT, clearT, alertSnd, proxT, proxPulse;
 let pistol, shotgun;
 let enemies, pickups, bullets, nades, explosions, particles, floaters, tracers, trails;
 let personalPoly, conePoly;
-let mouseX = 0, mouseY = 0, viewMouseX = 0, viewMouseY = 0, mouseIn = false, mouseDown = false, aimingGrenade = false;
+let mouseX = 0, mouseY = 0, viewMouseX = 0, viewMouseY = 0, mouseIn = false, mouseDown = false, aimingGrenade = false, breakClick = false;
 let camX = 0, camY = 0;
 let doorC = -1, doorR = -1, doorOpen = false, doorMsg = 0;
 let posts = [];
@@ -1188,7 +1188,10 @@ function standoff(ex, ey, cells) {
 }
 function tryFire() {
   if (phase !== 'play') return;
-  if (tryBreakClickedWall()) return;
+  if (breakClick) {
+    tryBreakClickedWall();
+    return;
+  }
   if (weapon === 0) swingKnife();
   else if (weapon === 1) firePistol();
   else fireShotgun();
@@ -2245,6 +2248,7 @@ window.addEventListener('keyup', e => {
 window.addEventListener('blur', () => {
   for (const k in down) down[k] = false;
   mouseDown = false;
+  breakClick = false;
   aimingGrenade = false;
 });
 cv.addEventListener('mousemove', e => {
@@ -2256,12 +2260,23 @@ cv.addEventListener('mousemove', e => {
 cv.addEventListener('mousedown', e => {
   ensureAudio();
   cv.focus();
-  if (e.button === 0) mouseDown = true;
+  const r = cv.getBoundingClientRect();
+  viewMouseX = (e.clientX - r.left) * (cv.width / r.width);
+  viewMouseY = (e.clientY - r.top) * (cv.height / r.height);
+  mouseIn = true;
+  syncMouse();
+  if (e.button === 0) {
+    mouseDown = true;
+    breakClick = !!adjacentBreakableAt(mouseX, mouseY);
+  }
   if (e.button === 2) aimingGrenade = true;
   e.preventDefault();
 });
 window.addEventListener('mouseup', e => {
-  if (e.button === 0) mouseDown = false;
+  if (e.button === 0) {
+    mouseDown = false;
+    breakClick = false;
+  }
   if (e.button === 2 && aimingGrenade) {
     aimingGrenade = false;
     throwGrenade();
