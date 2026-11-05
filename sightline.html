@@ -72,7 +72,7 @@ canvas{
   <span id="wD">Dash</span>
 </div>
 <canvas id="cv" tabindex="0"></canvas>
-<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>click a wall beside you</b> to break it · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door<br>
+<p id="hint"><b>W</b> forward · <b>S</b> back · <b>A/D</b> strafe · <b>mouse</b> aims · <b>left click</b> shoots · <b>click a wall beside you</b> to break it · <b>1</b> blade · <b>2</b> pistol · <b>3</b> scatter · <b>hold right click or G</b>, release to throw a grenade · <b>Space</b> dash · <b>R</b> reload · <b>B</b> break the wall in front · <b>Q</b> place a wall · <b>F</b> place a door · <b>V</b> open or shut your door · <b>M</b> show/hide minimap<br>
 Walls block sight, shots, and blasts. The exit stays shut until every enemy is down, then walk through it. Hold <b>E</b> to claim a post. Every post shoots. Green posts also make health, gold makes shells, blue makes rounds. The maze starts small, then doubles each floor up to four times across. A door costs 2 wall pieces. You carry a limited stack; past that, the broken cell drops a piece on the ground and stays open. Your door lets you through when it is open. Enemies never walk through it.</p>
 <button id="nb" type="button" onclick="newGame()">New run</button>
 <div id="msg"><h2 id="mh">Downed</h2><p id="mt"></p><button id="mb" type="button" onclick="newGame()">Run it back</button></div>
@@ -112,6 +112,7 @@ let pistol, shotgun;
 let enemies, pickups, bullets, nades, explosions, particles, floaters, tracers, trails;
 let personalPoly, conePoly;
 let mouseX = 0, mouseY = 0, viewMouseX = 0, viewMouseY = 0, mouseIn = false, mouseDown = false, aimingGrenade = false, breakClick = false;
+let showMinimap = true;
 let camX = 0, camY = 0;
 let doorC = -1, doorR = -1, doorOpen = false, doorMsg = 0;
 let posts = [];
@@ -1466,6 +1467,7 @@ function update(dt) {
   if (pressed['1']) selectWeapon(0);
   if (pressed['2']) selectWeapon(1);
   if (pressed['3']) selectWeapon(2);
+  if (pressed['m']) showMinimap = !showMinimap;
   if (pressed['r']) {
     if (weapon === 1) startReload(pistol);
     if (weapon === 2) startReload(shotgun);
@@ -2198,7 +2200,7 @@ function draw() {
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  drawMinimap();
+  if (showMinimap) drawMinimap();
   drawOwnedMarkers();
 
   if (hurtFlash > 0) {
@@ -2231,7 +2233,7 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-const GAME_KEYS = new Set(['w', 'a', 's', 'd', 'e', 'b', 'q', 'f', 'v', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'g', 'r', '1', '2', '3']);
+const GAME_KEYS = new Set(['w', 'a', 's', 'd', 'e', 'b', 'q', 'f', 'v', 'm', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'g', 'r', '1', '2', '3']);
 window.addEventListener('keydown', e => {
   ensureAudio();
   const k = e.key.toLowerCase();
