@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Close Steel</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#1a1c16;color:#c8c4b0;font-family:'Segoe UI',sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:14px 10px 24px;user-select:none;
+}
+h1{color:#d4c07a;letter-spacing:3px;font-size:1.35em}
+#sub{color:#8a8674;font-size:.82em;margin:2px 0 8px}
+#info{display:flex;flex-wrap:wrap;gap:12px 18px;justify-content:center;font-size:.88em;margin-bottom:8px}
+#info strong{color:#d4c07a}
+canvas{
+  border:2px solid #3a3c30;border-radius:6px;display:block;max-width:100%;
+  box-shadow:0 0 36px rgba(0,0,0,.45);cursor:crosshair;background:#4a5a32;
+}
+#hint{margin-top:8px;max-width:960px;text-align:center;color:#7a7668;font-size:.8em;line-height:1.45}
+#hint b{color:#b8b090}
+button{
+  margin-top:8px;background:#2c2e24;color:#d4c07a;border:1px solid #5a5c48;
+  padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:700;
+}
+button:hover{background:#3a3c30}
+#msg{
+  position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(10,12,8,.72);z-index:10;
+}
+#msg .card{
+  background:#22241c;border:2px solid #d4c07a;border-radius:12px;
+  padding:32px 40px;text-align:center;max-width:420px;
+}
+#msg.lose .card{border-color:#c45c45}
+#msg h2{color:#d4c07a;margin-bottom:8px}
+#msg.lose h2{color:#c45c45}
+#msg p{color:#a8a490;margin-bottom:16px;line-height:1.4}
+</style>
+</head>
+<body>
+<h1>CLOSE STEEL</h1>
+<p id="sub">Normandy village · top-down 3D · Close Combat orders</p>
+<div id="info">
+  <span>Allied <strong id="aliveP">0</strong></span>
+  <span>German <strong id="aliveE">0</strong></span>
+  <span>Selected <strong id="sel">—</strong></span>
+  <span>Order <strong id="ord">—</strong></span>
+</div>
+<canvas id="cv"></canvas>
+<p id="hint"><b>Left click</b> select tank · <b>Right click</b> ground to move · <b>Right click</b> enemy to attack · <b>H</b> halt · Shells stop on houses and walls until they are rubble. Hedges block sight.</p>
+<button onclick="newBattle()">New battle</button>
+<div id="msg"><div class="card"><h2 id="mh"></h2><p id="mt"></p><button onclick="newBattle()">Fight again</button></div></div>
+
+<script>
+'use strict';
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = 1100, H = 720;
+cv.width = W; cv.height = H;
+
+const YSQ = 0.78;
+const HZ = 0.52;
+const P = 0, E = 1;
+
+const SHERMAN = { name: 'Sherman', hp: 100, armor: 0.32, speed: 82, turn: 2.1, turret: 3.0, reload: 2.35, dmg: 36, range: 500, color: '#4e5c32', trim: '#2a3418' };
+const PANZER  = { name: 'Panzer IV', hp: 112, armor: 0.42, speed: 70, turn: 1.7, turret: 2.3, reload: 2.55, dmg: 40, range: 530, color: '#6a6550', trim: '#3a382c' };
+
+let solids, tanks, shells, fx, fires;
+let selected, over, mx, my, cam;
+let playing;
+
+function proj(x, y, z) {
+  return [x, y * YSQ - (z || 0) * HZ];
+}
+function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function angDiff(a, b) { return Math.atan2(Math.sin(b - a), Math.cos(b - a)); }
+function turnToward(cur, tgt, max) {
+  const d = angDiff(cur, tgt);
+  if (Math.abs(d) <= max) return tgt;
+  return cur + Math.sign(d) * max;
+}
+function aabb(o) { return { x: o.x, y: o.y, w: o.w, h: o.h }; }
+function pointIn(o, x, y) {
+  return x >= o.x && y >= o.y && x <= o.x + o.w && y <= o.y + o.h;
+}
+function circleAabb(cx, cy, r, o) {
+  const nx = clamp(cx, o.x, o.x + o.w);
+  const ny = clamp(cy, o.y, o.y + o.h);
+  const dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
+}
+function segAabb(x0, y0, x1, y1, o) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const n = Math.ceil(len / 4);
+  for (let i = 1; i <= n; i++) {
+    const x = x0 + dx * i / n, y = y0 + dy * i / n;
+    if (pointIn(o, x, y)) return { x, y, t: i / n };
+  }
+  return null;
+}
+
+function newBattle() {
+  document.getElementById('msg').style.display = 'none';
+  document.getElementById('msg').classList.remove('lose');
+  solids = [];
+  tanks = [];
+  shells = [];
+  fx = [];
+  fires = [];
+  selected = null;
+  over = false;
+  playing = true;
+  mx = W / 2; my = H / 2;
+  buildMap();
+  spawnForce();
+}
+
+function addSolid(kind, x, y, w, h, z, hp, fill, roof) {
+  solids.push({
+    kind, x, y, w, h, z, hp, max: hp,
+    fill: fill || '#8a6a4a', roof: roof || '#5a4030',
+    rubble: false
+  });
+}
+
+function buildMap() {
+  // road strip (visual only, stored as ground marks)
+  // village cluster
+  const houses = [
+    [430, 210, 58, 44, 32], [510, 200, 50, 40, 28], [580, 218, 62, 48, 34],
+    [448, 290, 54, 42, 30], [530, 300, 70, 50, 36], [620, 286, 48, 40, 26],
+    [470, 390, 60, 46, 30], [560, 400, 52, 42, 28], [640, 380, 66, 50, 34],
+    [720, 240, 80, 56, 44], // church
+    [300, 330, 50, 38, 26], [780, 430, 56, 44, 30],
+    [360, 480, 48, 36, 24], [700, 500, 52, 40, 28]
+  ];
+  for (const [x, y, w, h, z] of houses) {
+    const brick = Math.random() < 0.5;
+    addSolid('building', x, y, w, h, z, 90 + z * 1.4,
+      brick ? '#8b5a43' : '#c4b79a',
+      brick ? '#4a3028' : '#6a4030');
+  }
+  // stone walls / yards
+  const walls = [
+    [420, 180, 180, 8, 12], [418, 180, 8, 90, 12], [600, 180, 8, 70, 12],
+    [500, 268, 110, 8, 12],
+    [440, 360, 200, 8, 11], [438, 360, 8, 80, 11], [632, 360, 8, 88, 11],
+    [250, 300, 8, 120, 11], [250, 292, 90, 8, 11],
+    [760, 340, 8, 140, 12], [760, 340, 100, 8, 12], [852, 340, 8, 90, 12]
+  ];
+  for (const [x, y, w, h, z] of walls) addSolid('wall', x, y, w, h, z, 48, '#8a8680', '#6a6862');
+
+  const hedges = [
+    [180, 160, 140, 10, 9], [180, 160, 10, 80, 9],
+    [820, 150, 160, 10, 9], [970, 150, 10, 100, 9],
+    [140, 500, 180, 10, 8], [900, 560, 140, 10, 8],
+    [330, 140, 10, 70, 8]
+  ];
+  for (const [x, y, w, h, z] of hedges) addSolid('hedge', x, y, w, h, z, 18, '#2f4a24', '#24381c');
+}
+
+function spawnTank(team, spec, x, y, ang) {
+  const t = {
+    team, spec, x, y, r: 16,
+    ang, turret: ang, hp: spec.hp, max: spec.hp,
+    vx: 0, vy: 0, reload: 0,
+    order: 'hold', tx: x, ty: y, target: null,
+    wreck: false, flash: 0
+  };
+  tanks.push(t);
+  clearSpawn(t);
+}
+
+function spawnBlocked(t, x, y) {
+  for (const s of solids) {
+    if (s.rubble || s.hp <= 0 || s.kind === 'hedge') continue;
+    if (circleAabb(x, y, t.r + 2, s)) return true;
+  }
+  for (const o of tanks) {
+    if (o === t || o.wreck) continue;
+    if (Math.hypot(o.x - x, o.y - y) < t.r + o.r) return true;
+  }
+  if (x < 24 || y < 24 || x > W - 24 || y > H / YSQ - 24) return true;
+  return false;
+}
+
+function clearSpawn(t) {
+  const ox = t.x, oy = t.y;
+  if (!spawnBlocked(t, t.x, t.y)) { t.tx = t.x; t.ty = t.y; return; }
+  for (let r = 18; r <= 180; r += 14) {
+    for (let a = 0; a < 14; a++) {
+      const x = ox + Math.cos(a * Math.PI / 7) * r;
+      const y = oy + Math.sin(a * Math.PI / 7) * r;
+      if (!spawnBlocked(t, x, y)) { t.x = t.tx = x; t.y = t.ty = y; return; }
+    }
+  }
+}
+
+function spawnForce() {
+  const py = [220, 340, 460, 560];
+  for (let i = 0; i < 4; i++) spawnTank(P, SHERMAN, 90 + (i % 2) * 36, py[i], 0);
+  const spots = [[400, 200], [820, 165], [860, 490], [390, 580]];
+  for (const s of spots) spawnTank(E, PANZER, s[0], s[1], Math.PI);
+  selected = tanks.find(t => t.team === P);
+}
+
+function solidAt(x, y, shellsPassRubble) {
+  for (const s of solids) {
+    if (s.rubble) continue;
+    if (s.hp <= 0) continue;
+    if (pointIn(s, x, y)) return s;
+  }
+  return null;
+}
+function tankAt(x, y, skip) {
+  for (const t of tanks) {
+    if (t === skip || t.wreck) continue;
+    if (Math.hypot(t.x - x, t.y - y) < t.r) return t;
+  }
+  return null;
+}
+
+function losBlocked(x0, y0, x1, y1, skipTank) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const n = Math.ceil(len / 5);
+  for (let i = 1; i < n; i++) {
+    const x = x0 + dx * i / n, y = y0 + dy * i / n;
+    const s = solidAt(x, y);
+    if (s) return s;
+  }
+  return null;
+}
+
+function hasLOS(a, b) {
+  if (Math.hypot(a.x - b.x, a.y - b.y) > a.spec.range) return false;
+  return !losBlocked(a.x, a.y, b.x, b.y, a);
+}
+
+function collideMove(t, nx, ny) {
+  for (const s of solids) {
+    if (s.rubble || s.hp <= 0) continue;
+    if (s.kind === 'hedge') continue;
+    if (circleAabb(nx, ny, t.r, s)) return false;
+  }
+  for (const o of tanks) {
+    if (o === t || o.wreck) continue;
+    if (Math.hypot(o.x - nx, o.y - ny) < t.r + o.r - 1) return false;
+  }
+  if (nx < 20 || ny < 20 || nx > W - 20 || ny > H / YSQ - 20) return false;
+  return true;
+}
+
+function burst(x, y, color, n, spd) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = spd * (0.4 + Math.random());
+    fx.push({ x, y, z: 8 + Math.random() * 10, vx: Math.cos(a) * s, vy: Math.sin(a) * s, vz: 20 + Math.random() * 40, life: 0.35 + Math.random() * 0.4, color, r: 1.5 + Math.random() * 2 });
+  }
+}
+
+function destroySolid(s) {
+  s.hp = 0;
+  s.rubble = true;
+  s.z = Math.max(4, s.z * 0.22);
+  s.fill = '#5a5044';
+  s.roof = '#3a3830';
+  burst(s.x + s.w / 2, s.y + s.h / 2, '#c4a070', 16, 90);
+  fires.push({ x: s.x + s.w / 2, y: s.y + s.h / 2, life: 4 + Math.random() * 3 });
+}
+
+function hitSolid(s, dmg, x, y) {
+  if (s.rubble || s.hp <= 0) return;
+  s.hp -= dmg;
+  burst(x, y, s.kind === 'hedge' ? '#6a8a40' : '#d0c0a0', 8, 60);
+  if (s.hp <= 0) destroySolid(s);
+}
+
+function hitTank(t, dmg, x, y) {
+  if (t.wreck) return;
+  const face = Math.cos(angDiff(t.ang, Math.atan2(y - t.y, x - t.x)));
+  const factor = face > 0.3 ? (1 - t.spec.armor) : (1 - t.spec.armor * 0.45);
+  t.hp -= dmg * factor;
+  t.flash = 0.12;
+  burst(x, y, '#ffcc66', 10, 80);
+  if (t.hp <= 0) {
+    t.hp = 0; t.wreck = true; t.order = 'hold'; t.target = null;
+    burst(t.x, t.y, '#ff6622', 18, 110);
+    fires.push({ x: t.x, y: t.y, life: 8 });
+    if (selected === t) selected = tanks.find(u => u.team === P && !u.wreck) || null;
+    checkEnd();
+  }
+}
+
+function fireShell(t, tx, ty) {
+  const a = t.turret;
+  const muzzle = 22;
+  const sx = t.x + Math.cos(a) * muzzle;
+  const sy = t.y + Math.sin(a) * muzzle;
+  const spd = 520;
+  shells.push({
+    x: sx, y: sy, z: 12,
+    vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
+    team: t.team, dmg: t.spec.dmg, life: 1.6, owner: t
+  });
+  t.reload = t.spec.reload;
+  t.flash = 0.08;
+  burst(sx, sy, '#ffe8a0', 5, 40);
+}
+
+function stepShell(s, dt) {
+  const nx = s.x + s.vx * dt, ny = s.y + s.vy * dt;
+  const len = Math.hypot(s.vx * dt, s.vy * dt);
+  const n = Math.max(1, Math.ceil(len / 3));
+  for (let i = 1; i <= n; i++) {
+    const x = s.x + (nx - s.x) * i / n;
+    const y = s.y + (ny - s.y) * i / n;
+    if (x < 0 || y < 0 || x > W || y > H / YSQ) { s.life = 0; burst(x, y, '#ccc', 4, 30); return; }
+    const b = solidAt(x, y);
+    if (b) {
+      hitSolid(b, s.dmg, x, y);
+      s.life = 0;
+      burst(x, y, '#e8d0a0', 12, 70);
+      return;
+    }
+    const tank = tankAt(x, y, s.owner);
+    if (tank && tank.team !== s.team) {
+      hitTank(tank, s.dmg, x, y);
+      s.life = 0;
+      return;
+    }
+  }
+  s.x = nx; s.y = ny; s.life -= dt;
+}
+
+function orderMove(t, x, y) {
+  t.order = 'move';
+  t.tx = clamp(x, 30, W - 30);
+  t.ty = clamp(y, 30, H / YSQ - 30);
+  t.target = null;
+}
+function orderAttack(t, enemy) {
+  t.order = 'attack';
+  t.target = enemy;
+}
+function orderHalt(t) {
+  t.order = 'hold';
+  t.target = null;
+  t.tx = t.x; t.ty = t.y;
+}
+
+function steer(t, dt) {
+  if (t.wreck) return;
+  let gx = t.tx, gy = t.ty;
+  if (t.order === 'attack' && t.target && !t.target.wreck) {
+    const d = Math.hypot(t.target.x - t.x, t.target.y - t.y);
+    if (d > t.spec.range * 0.72 || losBlocked(t.x, t.y, t.target.x, t.target.y)) {
+      gx = t.target.x; gy = t.target.y;
+    } else {
+      gx = t.x; gy = t.y;
+    }
+  }
+  const dx = gx - t.x, dy = gy - t.y;
+  const dist = Math.hypot(dx, dy);
+  const want = dist > 8 ? Math.atan2(dy, dx) : t.ang;
+  t.ang = turnToward(t.ang, want, t.spec.turn * dt);
+  let speed = 0;
+  if (dist > 8 && Math.abs(angDiff(t.ang, want)) < 0.7) speed = t.spec.speed;
+  else if (dist > 8) speed = t.spec.speed * 0.25;
+  let vx = Math.cos(t.ang) * speed * dt;
+  let vy = Math.sin(t.ang) * speed * dt;
+  // slide along obstacles
+  if (collideMove(t, t.x + vx, t.y + vy)) { t.x += vx; t.y += vy; }
+  else if (collideMove(t, t.x + vx, t.y)) t.x += vx;
+  else if (collideMove(t, t.x, t.y + vy)) t.y += vy;
+  else {
+    // nudge around
+    const side = Math.sign(angDiff(t.ang, Math.atan2(dy, dx)) || 1);
+    t.ang += side * t.spec.turn * dt * 0.8;
+  }
+}
+
+function nearestEnemyLOS(t) {
+  let best = null, bestD = t.spec.range + 1;
+  for (const u of tanks) {
+    if (u.team === t.team || u.wreck) continue;
+    const d = Math.hypot(u.x - t.x, u.y - t.y);
+    if (d < bestD && d <= t.spec.range && hasLOS(t, u)) { bestD = d; best = u; }
+  }
+  return best;
+}
+
+function aimAndFire(t, dt) {
+  if (t.wreck) return;
+  t.reload = Math.max(0, t.reload - dt);
+  t.flash = Math.max(0, t.flash - dt);
+  let tgt = null, intoCover = false;
+  if (t.order === 'attack' && t.target && !t.target.wreck) {
+    tgt = t.target;
+    intoCover = true;
+  } else {
+    tgt = nearestEnemyLOS(t);
+  }
+  const aimX = tgt ? tgt.x : t.x + Math.cos(t.ang) * 40;
+  const aimY = tgt ? tgt.y : t.y + Math.sin(t.ang) * 40;
+  const want = Math.atan2(aimY - t.y, aimX - t.x);
+  t.turret = turnToward(t.turret, want, t.spec.turret * dt);
+  if (!tgt || t.reload > 0) return;
+  const d = Math.hypot(tgt.x - t.x, tgt.y - t.y);
+  if (d > t.spec.range || Math.abs(angDiff(t.turret, want)) > 0.08) return;
+  if (!intoCover && !hasLOS(t, tgt)) return;
+  fireShell(t, tgt.x, tgt.y);
+}
+
+function aiTeam(dt) {
+  for (const t of tanks) {
+    if (t.team !== E || t.wreck) continue;
+    let best = null, bestD = 1e9;
+    for (const u of tanks) {
+      if (u.team !== P || u.wreck) continue;
+      const d = Math.hypot(u.x - t.x, u.y - t.y);
+      if (d < bestD) { bestD = d; best = u; }
+    }
+    if (!best) { orderHalt(t); continue; }
+    if (bestD < t.spec.range && hasLOS(t, best)) orderAttack(t, best);
+    else if (t.order !== 'move' || Math.hypot(t.tx - t.x, t.ty - t.y) < 12) {
+      const jx = best.x + (Math.random() - 0.5) * 80;
+      const jy = best.y + (Math.random() - 0.5) * 80;
+      orderMove(t, jx, jy);
+      t.target = best;
+      t.order = 'attack';
+    } else t.target = best;
+  }
+}
+
+function checkEnd() {
+  const p = tanks.some(t => t.team === P && !t.wreck);
+  const e = tanks.some(t => t.team === E && !t.wreck);
+  if (p && e) return;
+  over = true; playing = false;
+  const msg = document.getElementById('msg');
+  msg.style.display = 'flex';
+  if (!e) {
+    msg.classList.remove('lose');
+    document.getElementById('mh').textContent = 'Village taken';
+    document.getElementById('mt').textContent = 'German armour is burning. The Shermans hold the square.';
+  } else {
+    msg.classList.add('lose');
+    document.getElementById('mh').textContent = 'Knocked out';
+    document.getElementById('mt').textContent = 'All Allied tanks are wrecks in the lane.';
+  }
+}
+
+function pickTankScreen(sx, sy, team) {
+  let best = null, bestD = 24;
+  for (const t of tanks) {
+    if (team != null && t.team !== team) continue;
+    if (t.wreck && t.team === P) continue;
+    const [px, py] = proj(t.x, t.y, 8);
+    const d = Math.hypot(px - sx, py - sy);
+    if (d < bestD) { bestD = d; best = t; }
+  }
+  return best;
+}
+
+function worldFromMouse(mx, my) {
+  return { x: mx, y: my / YSQ };
+}
+
+function drawGround() {
+  ctx.fillStyle = '#4a5a32';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#5a4a32';
+  ctx.beginPath();
+  const [rx0, ry0] = proj(0, 390, 0);
+  const [rx1, ry1] = proj(W, 430, 0);
+  ctx.moveTo(0, ry0 - 18);
+  ctx.lineTo(W, ry1 - 22);
+  ctx.lineTo(W, ry1 + 28);
+  ctx.lineTo(0, ry0 + 26);
+  ctx.fill();
+  // scattered grass blobs
+  ctx.fillStyle = '#3f522c';
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 97) % W, y = (i * 53) % (H);
+    ctx.fillRect(x, y, 18, 8);
+  }
+}
+
+function drawPrism(o) {
+  const z = o.z;
+  const x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
+  const b00 = proj(x0, y0, 0), b10 = proj(x1, y0, 0), b01 = proj(x0, y1, 0), b11 = proj(x1, y1, 0);
+  const t00 = proj(x0, y0, z), t10 = proj(x1, y0, z), t01 = proj(x0, y1, z), t11 = proj(x1, y1, z);
+  // south face
+  ctx.fillStyle = shade(o.fill, -0.22);
+  ctx.beginPath();
+  ctx.moveTo(b01[0], b01[1]); ctx.lineTo(b11[0], b11[1]);
+  ctx.lineTo(t11[0], t11[1]); ctx.lineTo(t01[0], t01[1]);
+  ctx.closePath(); ctx.fill();
+  // east face
+  ctx.fillStyle = shade(o.fill, -0.38);
+  ctx.beginPath();
+  ctx.moveTo(b11[0], b11[1]); ctx.lineTo(b10[0], b10[1]);
+  ctx.lineTo(t10[0], t10[1]); ctx.lineTo(t11[0], t11[1]);
+  ctx.closePath(); ctx.fill();
+  // roof
+  ctx.fillStyle = o.rubble ? o.roof : o.roof;
+  ctx.beginPath();
+  ctx.moveTo(t00[0], t00[1]); ctx.lineTo(t10[0], t10[1]);
+  ctx.lineTo(t11[0], t11[1]); ctx.lineTo(t01[0], t01[1]);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  if (!o.rubble && o.kind === 'building') {
+    ctx.fillStyle = 'rgba(30,40,50,0.55)';
+    const [wx, wy] = proj(x0 + o.w * 0.25, y1 - 4, z * 0.4);
+    ctx.fillRect(wx, wy, 6, 7);
+    const [wx2, wy2] = proj(x0 + o.w * 0.6, y1 - 4, z * 0.4);
+    ctx.fillRect(wx2, wy2, 6, 7);
+    if (o.hp < o.max * 0.7) {
+      ctx.strokeStyle = 'rgba(20,16,12,0.45)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(t00[0] + 6, t00[1] + 4);
+      ctx.lineTo(t11[0] - 8, t11[1] - 2);
+      ctx.stroke();
+    }
+  }
+}
+
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = clamp(r + amt * 255, 0, 255); g = clamp(g + amt * 255, 0, 255); b = clamp(b + amt * 255, 0, 255);
+  return 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+}
+
+function drawBoxAt(x, y, w, h, z, ang, fill) {
+  const hw = w / 2, hh = h / 2;
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([px, py]) => {
+    const wx = x + px * c - py * s;
+    const wy = y + px * s + py * c;
+    return { x: wx, y: wy, b: proj(wx, wy, 0), t: proj(wx, wy, z) };
+  });
+  const south = corners.slice().sort((a, b) => b.y - a.y).slice(0, 2);
+  ctx.fillStyle = shade(fill, -0.25);
+  // simple: draw south-most two as a face + top
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const p = corners[i].t;
+    i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+  }
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
+  // drop sides from top to base for two lowest corners
+  ctx.fillStyle = shade(fill, -0.3);
+  for (const k of [2, 1]) {
+    const a = corners[k], b = corners[(k + 1) % 4];
+    ctx.beginPath();
+    ctx.moveTo(a.t[0], a.t[1]); ctx.lineTo(b.t[0], b.t[1]);
+    ctx.lineTo(b.b[0], b.b[1]); ctx.lineTo(a.b[0], a.b[1]);
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+function drawTank(t) {
+  const col = t.wreck ? '#3a342c' : (t.flash > 0 ? '#c8c4a0' : t.spec.color);
+  drawBoxAt(t.x, t.y, 30, 16, 8, t.ang, col);
+  if (!t.wreck) {
+    drawBoxAt(t.x, t.y, 16, 16, 13, t.turret, shade(t.spec.color, 0.08));
+    const bx = t.x + Math.cos(t.turret) * 18;
+    const by = t.y + Math.sin(t.turret) * 18;
+    drawBoxAt(bx, by, 16, 3.2, 11.5, t.turret, '#2a2a24');
+  }
+  const [sx, sy] = proj(t.x, t.y, 14);
+  if (t === selected && !t.wreck) {
+    ctx.strokeStyle = '#d4c07a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (!t.wreck && t.hp < t.max) {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(sx - 12, sy - 22, 24, 3);
+    ctx.fillStyle = t.hp / t.max > 0.4 ? '#7cba5a' : '#c45c45';
+    ctx.fillRect(sx - 12, sy - 22, 24 * t.hp / t.max, 3);
+  }
+  if (t.team === P && !t.wreck) {
+    ctx.fillStyle = '#6a8cff';
+    ctx.fillRect(sx - 2, sy - 2, 4, 4);
+  }
+}
+
+function drawLOS(t) {
+  if (!t || t.wreck || t.order !== 'attack' || !t.target || t.target.wreck) return;
+  const blocked = losBlocked(t.x, t.y, t.target.x, t.target.y);
+  const [a, b] = proj(t.x, t.y, 12);
+  const [c, d] = proj(t.target.x, t.target.y, 8);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = blocked ? 'rgba(200,80,60,0.55)' : 'rgba(220,200,90,0.55)';
+  ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+  ctx.setLineDash([]);
+  if (blocked) {
+    const [hx, hy] = proj(blocked.x + blocked.w / 2, blocked.y + blocked.h / 2, blocked.z);
+    ctx.fillStyle = 'rgba(200,80,60,0.25)';
+    ctx.fillRect(hx - 6, hy - 6, 12, 12);
+  }
+}
+
+function drawFx() {
+  for (const s of shells) {
+    const [x, y] = proj(s.x, s.y, s.z);
+    ctx.fillStyle = '#fff2b0';
+    ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,220,120,0.5)';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    const [tx, ty] = proj(s.x - s.vx * 0.04, s.y - s.vy * 0.04, s.z);
+    ctx.lineTo(tx, ty); ctx.stroke();
+  }
+  for (const p of fx) {
+    const [x, y] = proj(p.x, p.y, p.z);
+    ctx.globalAlpha = Math.max(0, p.life * 2);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  for (const f of fires) {
+    const [x, y] = proj(f.x, f.y, 6 + Math.sin(performance.now() / 80) * 3);
+    ctx.fillStyle = 'rgba(255,120,30,0.7)';
+    ctx.beginPath(); ctx.arc(x, y, 5 + Math.random() * 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,220,80,0.6)';
+    ctx.beginPath(); ctx.arc(x, y - 4, 3, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawMoveMark() {
+  if (!selected || selected.wreck || selected.order !== 'move') return;
+  const [x, y] = proj(selected.tx, selected.ty, 0);
+  ctx.strokeStyle = '#d4c07a';
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+}
+
+function render() {
+  drawGround();
+  const parts = [];
+  for (const s of solids) parts.push({ y: s.y + s.h, z: s.z, draw: () => drawPrism(s) });
+  for (const t of tanks) parts.push({ y: t.y + 10, z: 13, draw: () => drawTank(t) });
+  parts.sort((a, b) => a.y - b.y || a.z - b.z);
+  for (const p of parts) p.draw();
+  drawLOS(selected);
+  drawMoveMark();
+  drawFx();
+}
+
+function hud() {
+  const ap = tanks.filter(t => t.team === P && !t.wreck).length;
+  const ae = tanks.filter(t => t.team === E && !t.wreck).length;
+  document.getElementById('aliveP').textContent = ap;
+  document.getElementById('aliveE').textContent = ae;
+  if (!selected) {
+    document.getElementById('sel').textContent = '—';
+    document.getElementById('ord').textContent = '—';
+  } else {
+    document.getElementById('sel').textContent = selected.spec.name + '  ' + Math.max(0, selected.hp | 0) + 'hp';
+    document.getElementById('ord').textContent = selected.wreck ? 'WRECK' : selected.order.toUpperCase();
+  }
+}
+
+function update(dt) {
+  if (!playing) {
+    for (const p of fx) { p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.vz -= 80 * dt; p.life -= dt; }
+    fx = fx.filter(p => p.life > 0);
+    render();
+    return;
+  }
+  aiTeam(dt);
+  for (const t of tanks) {
+    steer(t, dt);
+    aimAndFire(t, dt);
+  }
+  for (const s of shells) stepShell(s, dt);
+  shells = shells.filter(s => s.life > 0);
+  for (const p of fx) {
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; p.vz -= 90 * dt; p.life -= dt;
+  }
+  fx = fx.filter(p => p.life > 0);
+  for (const f of fires) f.life -= dt;
+  fires = fires.filter(f => f.life > 0);
+  hud();
+  render();
+}
+
+function onLeft(x, y) {
+  const t = pickTankScreen(x, y, P);
+  if (t) selected = t;
+}
+function onRight(x, y) {
+  if (!selected || selected.wreck) return;
+  const enemy = pickTankScreen(x, y, E);
+  if (enemy && !enemy.wreck) orderAttack(selected, enemy);
+  else {
+    const w = worldFromMouse(x, y);
+    orderMove(selected, w.x, w.y);
+  }
+}
+
+cv.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect();
+  mx = (e.clientX - r.left) * (W / r.width);
+  my = (e.clientY - r.top) * (H / r.height);
+});
+cv.addEventListener('mousedown', e => {
+  e.preventDefault();
+  if (e.button === 0) onLeft(mx, my);
+  if (e.button === 2) onRight(mx, my);
+});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'h' && selected) orderHalt(selected);
+  if (k === '1' || k === '2' || k === '3' || k === '4') {
+    const list = tanks.filter(t => t.team === P);
+    const i = +k - 1;
+    if (list[i]) selected = list[i];
+  }
+});
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  requestAnimationFrame(loop);
+}
+newBattle();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
