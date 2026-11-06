@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Shellfall</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#141820;color:#c4c0b4;font-family:'Segoe UI',sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:14px 10px 24px;user-select:none;
+}
+h1{color:#e0c36a;letter-spacing:4px;font-size:1.4em}
+#sub{color:#7a8494;font-size:.82em;margin:2px 0 8px}
+#info{display:flex;flex-wrap:wrap;gap:10px 20px;justify-content:center;font-size:.88em;margin-bottom:8px;align-items:center}
+#info strong{color:#e0c36a}
+#p1n{color:#7cb86a} #p2n{color:#d47858}
+canvas{
+  border:2px solid #3a4250;border-radius:6px;display:block;max-width:100%;
+  box-shadow:0 0 36px rgba(0,0,0,.5);cursor:crosshair;background:#1c2838;
+}
+#hint{margin-top:8px;max-width:960px;text-align:center;color:#6a7380;font-size:.8em;line-height:1.45}
+#hint b{color:#b8b090}
+.btns{display:flex;gap:8px;margin-top:8px}
+button{
+  background:#242a34;color:#e0c36a;border:1px solid #5a6470;
+  padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:700;
+}
+button:hover{background:#323a46}
+#msg{
+  position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(8,10,14,.74);z-index:10;
+}
+#msg .card{
+  background:#1c222c;border:2px solid #e0c36a;border-radius:12px;
+  padding:32px 40px;text-align:center;max-width:440px;
+}
+#msg.lose .card{border-color:#d47858}
+#msg h2{color:#e0c36a;margin-bottom:8px}
+#msg.lose h2{color:#d47858}
+#msg p{color:#a8a490;margin-bottom:16px;line-height:1.4}
+</style>
+</head>
+<body>
+<h1>SHELLFALL</h1>
+<p id="sub">Artillery duel · dirt craters, then collapses without support</p>
+<div id="info">
+  <span id="p1n">Gunner A <strong id="hp1">100</strong></span>
+  <span>Wind <strong id="wind">—</strong></span>
+  <span id="p2n">Gunner B <strong id="hp2">100</strong></span>
+  <span>Turn <strong id="turn">A</strong></span>
+  <span>Angle <strong id="ang">60°</strong></span>
+  <span>Power <strong id="pow">60</strong></span>
+</div>
+<canvas id="cv"></canvas>
+<p id="hint"><b>A/D</b> or <b>←/→</b> aim · <b>W/S</b> or <b>↑/↓</b> power · <b>mouse</b> points the barrel · <b>Space</b> or <b>click</b> fire · Dirt needs support underneath or it shears off.</p>
+<div class="btns">
+  <button onclick="newDuel(false)">New duel</button>
+  <button onclick="newDuel(true)">Solo vs CPU</button>
+</div>
+<div id="msg"><div class="card"><h2 id="mh"></h2><p id="mt"></p><button onclick="newDuel(vsCpu)">Fight again</button></div></div>
+
+<script>
+'use strict';
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = 1100, H = 620;
+cv.width = W; cv.height = H;
+
+const CELL = 2;
+const GW = W / CELL, GH = H / CELL;
+const G = 520;
+const MAX_HP = 100;
+
+let dirt, tcv, tctx;
+let tanks, shell, fx, falling;
+let turn, phase, vsCpu, wind, shake, keys, mx, my;
+let dirty, charging, chargeT;
+
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function idx(x, y) { return y * GW + x; }
+function inGrid(x, y) { return x >= 0 && y >= 0 && x < GW && y < GH; }
+function get(x, y) {
+  if (y >= GH) return 3;
+  if (!inGrid(x, y)) return 0;
+  return dirt[idx(x, y)];
+}
+function solid(x, y) { return get(x, y) !== 0; }
+function loose(t) { return t === 1 || t === 2; }
+
+function rgbFor(x, y, t) {
+  const n = (x * 73 + y * 149) & 7;
+  if (t === 2) return n & 1 ? [72, 122, 48] : [58, 108, 40];
+  if (t === 3) {
+    const k = 78 + n * 3;
+    return [k, k - 2, k - 6];
+  }
+  const d = y / GH;
+  return [
+    (118 - d * 38 + n * 2) | 0,
+    (76 - d * 26 + n) | 0,
+    (44 - d * 12) | 0
+  ];
+}
+
+function paintRect(x0, y0, x1, y1) {
+  x0 = clamp(x0, 0, GW - 1); y0 = clamp(y0, 0, GH - 1);
+  x1 = clamp(x1, 0, GW - 1); y1 = clamp(y1, 0, GH - 1);
+  const w = (x1 - x0 + 1) * CELL, h = (y1 - y0 + 1) * CELL;
+  const img = tctx.createImageData(w, h);
+  const d = img.data;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const t = dirt[idx(x, y)];
+      if (!t) continue;
+      const [r, g, b] = rgbFor(x, y, t);
+      for (let oy = 0; oy < CELL; oy++) {
+        for (let ox = 0; ox < CELL; ox++) {
+          const i = ((y - y0) * CELL + oy) * w * 4 + ((x - x0) * CELL + ox) * 4;
+          d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+        }
+      }
+    }
+  }
+  tctx.putImageData(img, x0 * CELL, y0 * CELL);
+}
+
+function paintAll() {
+  tctx.clearRect(0, 0, W, H);
+  paintRect(0, 0, GW - 1, GH - 1);
+}
+
+function setCell(x, y, t) {
+  if (!inGrid(x, y)) return;
+  dirt[idx(x, y)] = t;
+}
+
+function expandDirty(x, y) {
+  if (x < dirty.x0) dirty.x0 = x;
+  if (x > dirty.x1) dirty.x1 = x;
+  if (y < dirty.y0) dirty.y0 = y;
+  if (y > dirty.y1) dirty.y1 = y;
+}
+function resetDirty() { dirty = { x0: GW, y0: GH, x1: 0, y1: 0 }; }
+function hasDirty() { return dirty.x1 >= dirty.x0; }
+
+function bump(x, c, w) {
+  const t = Math.abs(x - c) / w;
+  if (t >= 1) return 0;
+  return (1 - t * t) * (1 - t * t);
+}
+
+function genTerrain() {
+  dirt = new Uint8Array(GW * GH);
+  for (let x = 0; x < GW; x++) {
+    const px = x * CELL;
+    let sy = 318
+      + Math.sin(px * 0.011) * 78
+      + Math.sin(px * 0.027 + 1.7) * 40
+      + Math.sin(px * 0.07 + 0.4) * 16
+      + Math.sin(px * 0.17) * 7;
+    sy -= 78 * bump(px, 130, 160);
+    sy -= 78 * bump(px, W - 130, 160);
+    sy -= 52 * bump(px, W * 0.5, 150);
+    sy += 28 * bump(px, W * 0.34, 70);
+    sy += 22 * bump(px, W * 0.66, 80);
+    sy = clamp(sy, 90, H - 70);
+    const gy = (sy / CELL) | 0;
+    const stoneY = Math.max(gy + 52, (GH * 0.70) | 0) + ((x * 3) % 8);
+    for (let y = gy; y < GH; y++) {
+      if (y >= GH - 6) setCell(x, y, 3);
+      else if (y >= stoneY) setCell(x, y, 3);
+      else setCell(x, y, y === gy ? 2 : 1);
+    }
+  }
+  // cave / overhang in the central hill so support can fail
+  const cx = (GW * 0.5) | 0;
+  for (let x = cx - 48; x < cx + 48; x++) {
+    for (let y = 0; y < GH; y++) {
+      if (!loose(get(x, y))) continue;
+      const dx = (x - cx) / 48;
+      const top = 0;
+      let surf = 0;
+      while (surf < GH && !solid(x, surf)) surf++;
+      const cy = surf + 18 + Math.sin(dx * 3) * 4;
+      const h = 16 + (1 - dx * dx) * 10;
+      if (y > cy && y < cy + h && y < GH - 10) setCell(x, y, 0);
+    }
+  }
+  paintAll();
+}
+
+function surfaceY(px) {
+  const gx = clamp((px / CELL + 0.5) | 0, 0, GW - 1);
+  for (let y = 0; y < GH; y++) if (solid(gx, y)) return y * CELL;
+  return H + 40;
+}
+
+function groundBelow(px, fromY) {
+  const gx = clamp(Math.round(px / CELL), 0, GW - 1);
+  let gy = clamp((fromY / CELL) | 0, 0, GH - 1);
+  while (gy > 1 && solid(gx, gy)) gy--;
+  while (gy < GH - 1 && !solid(gx, gy + 1)) gy++;
+  if (gy >= GH - 1 && !solid(gx, GH - 1)) return H + 50;
+  return (gy + 1) * CELL;
+}
+
+function placeTank(id, x, col, name, mirror) {
+  const y = surfaceY(x);
+  return {
+    id, name, x, y, vy: 0, hp: MAX_HP, col,
+    ang: mirror ? 122 : 58, power: 62,
+    grounded: true, dead: false, flash: 0, mirror
+  };
+}
+
+function rollWind() {
+  wind = irand(-8, 8) * 4;
+  if (Math.abs(wind) < 8) wind = 0;
+}
+
+function newDuel(cpu) {
+  vsCpu = !!cpu;
+  document.getElementById('msg').style.display = 'none';
+  document.getElementById('msg').classList.remove('lose');
+  tcv = document.createElement('canvas');
+  tcv.width = W; tcv.height = H;
+  tctx = tcv.getContext('2d');
+  genTerrain();
+  tanks = [
+    placeTank(0, 108, '#6aaa4a', 'Gunner A', false),
+    placeTank(1, W - 108, '#d47858', 'Gunner B', true)
+  ];
+  tanks[0].y = groundBelow(tanks[0].x, 0);
+  tanks[1].y = groundBelow(tanks[1].x, 0);
+  shell = null;
+  fx = [];
+  falling = [];
+  turn = 0;
+  phase = 'aim';
+  shake = 0;
+  charging = false;
+  chargeT = 0;
+  resetDirty();
+  rollWind();
+  hud();
+}
+
+function muzzle(t) {
+  const rad = t.ang * Math.PI / 180;
+  return {
+    x: t.x + Math.cos(rad) * 26,
+    y: t.y - 10 - Math.sin(rad) * 26
+  };
+}
+
+function burst(x, y, color, n, spd, z) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = spd * (0.3 + Math.random());
+    fx.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40,
+      life: 0.3 + Math.random() * 0.45, color, r: 1.2 + Math.random() * 2.4
+    });
+  }
+}
+
+function hurt(t, dmg) {
+  if (t.dead) return;
+  t.hp = Math.max(0, t.hp - dmg);
+  t.flash = 0.15;
+  if (t.hp <= 0) {
+    t.dead = true;
+    burst(t.x, t.y - 8, '#ff8844', 22, 140);
+    burst(t.x, t.y - 8, '#ffe080', 10, 90);
+  }
+}
+
+function explode(px, py, radius, dmg) {
+  const cx = px / CELL, cy = py / CELL;
+  const r = radius / CELL;
+  const r2 = r * r;
+  const x0 = clamp((cx - r - 1) | 0, 0, GW - 1);
+  const x1 = clamp((cx + r + 1) | 0, 0, GW - 1);
+  const y0 = clamp((cy - r - 1) | 0, 0, GH - 1);
+  const y1 = clamp((cy + r + 1) | 0, 0, GH - 1);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const t = get(x, y);
+      if (!t) continue;
+      const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+      if (t === 3 && d2 > r2 * 0.42) continue;
+      if (y >= GH - 5) continue;
+      setCell(x, y, 0);
+    }
+  }
+  tctx.clearRect(x0 * CELL, y0 * CELL, (x1 - x0 + 1) * CELL, (y1 - y0 + 1) * CELL);
+  paintRect(x0, y0, x1, y1);
+  dirty = { x0: Math.max(0, x0 - 48), y0: 0, x1: Math.min(GW - 1, x1 + 48), y1: GH - 1 };
+  for (const t of tanks) {
+    if (t.dead) continue;
+    const d = Math.hypot(t.x - px, (t.y - 8) - py);
+    if (d < radius + 18) {
+      const falloff = 1 - d / (radius + 18);
+      hurt(t, dmg * falloff * falloff);
+    }
+  }
+  burst(px, py, '#e8d0a0', 18, 120);
+  burst(px, py, '#c47840', 12, 90);
+  shake = Math.max(shake, 10);
+}
+
+function supportScore(x, y) {
+  let s = 0;
+  if (solid(x, y + 1)) s += 2;
+  if (solid(x - 1, y + 1)) s += 1;
+  if (solid(x + 1, y + 1)) s += 1;
+  if (solid(x - 1, y) && solid(x - 1, y + 1)) s += 1;
+  if (solid(x + 1, y) && solid(x + 1, y + 1)) s += 1;
+  return s;
+}
+
+function collapsePass() {
+  if (!hasDirty() && falling.length) return false;
+  if (!hasDirty()) return false;
+  const x0 = clamp(dirty.x0, 0, GW - 1);
+  const x1 = clamp(dirty.x1, 0, GW - 1);
+  const y0 = clamp(dirty.y0, 0, GH - 1);
+  const y1 = clamp(dirty.y1, 0, GH - 1);
+  const drop = [];
+  for (let y = y1; y >= y0; y--) {
+    for (let x = x0; x <= x1; x++) {
+      const t = get(x, y);
+      if (!loose(t)) continue;
+      if (supportScore(x, y) < 3) drop.push(x, y, t);
+    }
+  }
+  if (!drop.length) {
+    growGrass(x0, x1);
+    resetDirty();
+    return false;
+  }
+  const cap = Math.min(drop.length, 55 * 3);
+  let nx0 = GW, ny0 = GH, nx1 = 0, ny1 = 0;
+  for (let i = 0; i < cap; i += 3) {
+    const x = drop[i], y = drop[i + 1], t = drop[i + 2];
+    if (get(x, y) !== t) continue;
+    setCell(x, y, 0);
+    tctx.clearRect(x * CELL, y * CELL, CELL, CELL);
+    falling.push({ x, y: y, vy: 8 + Math.random() * 12, kind: t === 2 ? 1 : t });
+    if (x < nx0) nx0 = x;
+    if (x > nx1) nx1 = x;
+    if (y < ny0) ny0 = y;
+    if (y > ny1) ny1 = y;
+  }
+  dirty.x0 = nx0 - 2; dirty.x1 = nx1 + 2;
+  dirty.y0 = 0; dirty.y1 = Math.max(y1, ny1 + 2);
+  return true;
+}
+
+function growGrass(x0, x1) {
+  for (let x = x0; x <= x1; x++) {
+    for (let y = 1; y < GH - 6; y++) {
+      if (get(x, y) === 1 && !solid(x, y - 1)) {
+        setCell(x, y, 2);
+        paintRect(x, y, x, y);
+        break;
+      }
+    }
+  }
+}
+
+function stepFalling(dt) {
+  for (let i = falling.length - 1; i >= 0; i--) {
+    const p = falling[i];
+    p.vy += (G / CELL) * dt;
+    p.y += p.vy * dt;
+    const gx = clamp(p.x | 0, 0, GW - 1);
+    let gy = p.y | 0;
+    if (gy >= GH - 1 || solid(gx, gy + 1) || (gy >= 0 && solid(gx, gy) && p.vy > 0)) {
+      while (gy > 0 && solid(gx, gy)) gy--;
+      if (gy < 0) gy = 0;
+      if (!solid(gx, gy) && gy < GH - 4) {
+        setCell(gx, gy, p.kind);
+        paintRect(gx, gy, gx, gy);
+        expandDirty(gx, gy);
+        expandDirty(gx, gy - 2);
+        expandDirty(gx - 1, gy);
+        expandDirty(gx + 1, gy);
+      }
+      falling.splice(i, 1);
+    }
+  }
+}
+
+function terrainHit(px, py) {
+  const x = (px / CELL) | 0, y = (py / CELL) | 0;
+  return solid(x, y);
+}
+
+function simulate(t, ang, power) {
+  const m = muzzle({ ...t, ang });
+  let x = m.x, y = m.y;
+  const spd = 70 + power * 6.2;
+  const rad = ang * Math.PI / 180;
+  let vx = Math.cos(rad) * spd, vy = -Math.sin(rad) * spd;
+  for (let i = 0; i < 240; i++) {
+    vx += wind * 0.016;
+    vy += G * 0.016;
+    x += vx * 0.016; y += vy * 0.016;
+    if (x < 0 || x > W || y > H) return { x, y };
+    if (y > 0 && terrainHit(x, y)) return { x, y };
+    for (const u of tanks) {
+      if (u === t || u.dead) continue;
+      if (Math.hypot(u.x - x, (u.y - 8) - y) < 14) return { x, y };
+    }
+  }
+  return { x, y };
+}
+
+function fire() {
+  const t = tanks[turn];
+  if ((phase !== 'aim' && phase !== 'cpu') || t.dead || shell) return;
+  const m = muzzle(t);
+  const spd = 70 + t.power * 6.2;
+  const rad = t.ang * Math.PI / 180;
+  shell = {
+    x: m.x, y: m.y,
+    vx: Math.cos(rad) * spd,
+    vy: -Math.sin(rad) * spd,
+    trail: [],
+    owner: t.id
+  };
+  phase = 'fly';
+  burst(m.x, m.y, '#ffe8a8', 6, 50);
+}
+
+function stepShell(dt) {
+  if (!shell) return;
+    const steps = Math.max(1, Math.ceil(Math.hypot(shell.vx, shell.vy) * dt / 2));
+  const sdt = dt / steps;
+  for (let k = 0; k < steps; k++) {
+    shell.vx += wind * sdt;
+    shell.vy += G * sdt;
+    shell.x += shell.vx * sdt;
+    shell.y += shell.vy * sdt;
+    shell.trail.push(shell.x, shell.y);
+    if (shell.trail.length > 36) shell.trail.splice(0, 2);
+    if (shell.x < -20 || shell.x > W + 20 || shell.y > H + 20) {
+      shell = null; beginSettle(); return;
+    }
+    if (shell.y < -80) continue;
+    for (const t of tanks) {
+      if (t.dead) continue;
+      if (Math.hypot(t.x - shell.x, (t.y - 8) - shell.y) < 13) {
+        explode(shell.x, shell.y, 38, 78);
+        shell = null; beginSettle(); return;
+      }
+    }
+    if (shell.y > 0 && terrainHit(shell.x, shell.y)) {
+      explode(shell.x, shell.y, 42, 62);
+      shell = null; beginSettle(); return;
+    }
+  }
+}
+
+function beginSettle() {
+  phase = 'settle';
+}
+
+function stepTanks(dt) {
+  for (const t of tanks) {
+    t.flash = Math.max(0, t.flash - dt);
+    if (t.dead) continue;
+    const g = groundBelow(t.x, t.y - 4);
+    if (g > t.y + 3) {
+      t.grounded = false;
+      t.vy += G * dt;
+      t.y += t.vy * dt;
+      if (t.y >= g) {
+        if (t.vy > 260) hurt(t, (t.vy - 260) * 0.12);
+        t.y = g; t.vy = 0; t.grounded = true;
+      }
+    } else {
+      if (t.vy > 260) hurt(t, (t.vy - 260) * 0.12);
+      t.y = g; t.vy = 0; t.grounded = true;
+    }
+    const sl = groundBelow(t.x + 12, t.y - 4) - groundBelow(t.x - 12, t.y - 4);
+    if (t.grounded && Math.abs(sl) > 18) t.x -= Math.sign(sl) * 46 * dt;
+    t.x = clamp(t.x, 18, W - 18);
+    if (t.y > H - 6) hurt(t, 100);
+  }
+}
+
+function nextTurn() {
+  if (tanks[0].dead || tanks[1].dead) { endGame(); return; }
+  turn = 1 - turn;
+  if (tanks[turn].dead) turn = 1 - turn;
+  rollWind();
+  phase = 'aim';
+  charging = false;
+  if (vsCpu && turn === 1) phase = 'cpu';
+  hud();
+}
+
+function cpuAimAndFire(dt) {
+  const me = tanks[1], en = tanks[0];
+  if (!me.cpuPlan) {
+    let best = { d: 1e9, ang: 120, power: 60 };
+    for (let i = 0; i < 55; i++) {
+      const ang = 20 + Math.random() * 140;
+      const power = 28 + Math.random() * 70;
+      const hit = simulate(me, ang, power);
+      let d = Math.hypot(hit.x - en.x, hit.y - (en.y - 8));
+      if (hit.y > en.y + 30) d += 40;
+      if (d < best.d) best = { d, ang, power };
+    }
+    me.cpuPlan = best;
+    me.cpuT = 0;
+  }
+  me.cpuT += dt;
+  const p = Math.min(1, me.cpuT / 0.9);
+  me.ang = lerp(me.ang, me.cpuPlan.ang, 0.08);
+  me.power = lerp(me.power, me.cpuPlan.power, 0.08);
+  hud();
+  if (p >= 1 && Math.abs(me.ang - me.cpuPlan.ang) < 2) {
+    me.power = me.cpuPlan.power;
+    me.ang = me.cpuPlan.ang;
+    me.cpuPlan = null;
+    fire();
+  }
+}
+
+function endGame() {
+  phase = 'over';
+  const a = tanks[0].dead, b = tanks[1].dead;
+  const msg = document.getElementById('msg');
+  msg.style.display = 'flex';
+  if (a && b) {
+    msg.classList.add('lose');
+    document.getElementById('mh').textContent = 'Mutual ruin';
+    document.getElementById('mt').textContent = 'Both guns are wrecks. The hillside keeps sliding.';
+  } else if (b) {
+    msg.classList.remove('lose');
+    document.getElementById('mh').textContent = 'Gunner A holds';
+    document.getElementById('mt').textContent = 'The eastern battery is buried. A owns the ridge.';
+  } else {
+    msg.classList.add('lose');
+    document.getElementById('mh').textContent = 'Gunner B holds';
+    document.getElementById('mt').textContent = 'A is silent. Dust settles over the western nest.';
+  }
+}
+
+function hud() {
+  document.getElementById('hp1').textContent = Math.max(0, tanks[0].hp | 0);
+  document.getElementById('hp2').textContent = Math.max(0, tanks[1].hp | 0);
+  const w = wind;
+  document.getElementById('wind').textContent = !w ? 'calm' : (w > 0 ? '► ' : '◄ ') + Math.abs(w | 0);
+  document.getElementById('turn').textContent = phase === 'over' ? '—' : (turn === 0 ? 'A' : 'B');
+  const t = tanks[turn];
+  document.getElementById('ang').textContent = (t.ang | 0) + '°';
+  document.getElementById('pow').textContent = (t.power | 0);
+}
+
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1a2438');
+  g.addColorStop(0.45, '#3a4a62');
+  g.addColorStop(0.72, '#c4a070');
+  g.addColorStop(1, '#6a5038');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#f0d8a0';
+  ctx.beginPath(); ctx.arc(W * 0.82, 78, 28, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(220,210,190,0.12)';
+  ctx.beginPath(); ctx.ellipse(200, 90, 90, 18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(480, 60, 70, 14, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(820, 110, 80, 16, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawPreview(t) {
+  if (phase !== 'aim' && phase !== 'cpu') return;
+  const m = muzzle(t);
+  let x = m.x, y = m.y;
+  const spd = 70 + t.power * 6.2;
+  const rad = t.ang * Math.PI / 180;
+  let vx = Math.cos(rad) * spd, vy = -Math.sin(rad) * spd;
+  ctx.fillStyle = 'rgba(224,195,106,0.55)';
+  for (let i = 0; i < 36; i++) {
+    vx += wind * 0.018;
+    vy += G * 0.018;
+    x += vx * 0.018; y += vy * 0.018;
+    if (i % 2) continue;
+    if (y > 0 && terrainHit(x, y)) break;
+    if (x < 0 || x > W || y > H) break;
+    ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawTank(t) {
+  const x = t.x, y = t.y;
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.beginPath(); ctx.ellipse(x, y + 2, 16, 4, 0, 0, Math.PI * 2); ctx.fill();
+  if (t.dead) {
+    ctx.fillStyle = '#3a342c';
+    ctx.fillRect(x - 14, y - 10, 28, 10);
+    ctx.fillStyle = '#2a2620';
+    ctx.fillRect(x - 8, y - 16, 16, 8);
+    return;
+  }
+  const body = t.flash > 0 ? '#f0e8c8' : t.col;
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.moveTo(x - 16, y);
+  ctx.lineTo(x - 14, y - 9);
+  ctx.lineTo(x + 14, y - 9);
+  ctx.lineTo(x + 16, y);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#2a2e28';
+  ctx.fillRect(x - 15, y - 3, 30, 4);
+  ctx.fillStyle = t.flash > 0 ? '#f0e8c8' : shade(t.col, 18);
+  ctx.beginPath(); ctx.arc(x, y - 11, 7, Math.PI, 0); ctx.fill();
+  const rad = t.ang * Math.PI / 180;
+  ctx.strokeStyle = '#2a2a24';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 10);
+  ctx.lineTo(x + Math.cos(rad) * 24, y - 10 - Math.sin(rad) * 24);
+  ctx.stroke();
+  if (t === tanks[turn] && (phase === 'aim' || phase === 'cpu')) {
+    ctx.strokeStyle = '#e0c36a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y - 8, 22, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.fillStyle = '#111';
+  ctx.fillRect(x - 14, y - 28, 28, 4);
+  ctx.fillStyle = t.hp > 40 ? '#7cba5a' : '#c45c45';
+  ctx.fillRect(x - 14, y - 28, 28 * (t.hp / MAX_HP), 4);
+}
+
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = clamp(((n >> 16) & 255) + amt, 0, 255);
+  let g = clamp(((n >> 8) & 255) + amt, 0, 255);
+  let b = clamp((n & 255) + amt, 0, 255);
+  return 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+}
+
+function drawFx() {
+  if (shell) {
+    ctx.strokeStyle = 'rgba(255,230,160,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < shell.trail.length; i += 2) {
+      i === 0 ? ctx.moveTo(shell.trail[i], shell.trail[i + 1]) : ctx.lineTo(shell.trail[i], shell.trail[i + 1]);
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#fff4c0';
+    ctx.beginPath(); ctx.arc(shell.x, shell.y, 3.2, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const p of falling) {
+    const [r, g, b] = rgbFor(p.x | 0, p.y | 0, p.kind);
+    ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    ctx.fillRect(p.x * CELL - 1, p.y * CELL - 1, CELL + 2, CELL + 2);
+  }
+  for (const p of fx) {
+    ctx.globalAlpha = Math.max(0, p.life * 2.2);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawPower() {
+  if (phase !== 'aim' && phase !== 'cpu') return;
+  const t = tanks[turn];
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(W / 2 - 80, H - 22, 160, 10);
+  ctx.fillStyle = '#e0c36a';
+  ctx.fillRect(W / 2 - 80, H - 22, 160 * (t.power / 100), 10);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.strokeRect(W / 2 - 80, H - 22, 160, 10);
+}
+
+function render() {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  drawSky();
+  ctx.drawImage(tcv, 0, 0);
+  if (phase === 'aim' || phase === 'cpu') drawPreview(tanks[turn]);
+  for (const t of tanks) drawTank(t);
+  drawFx();
+  drawPower();
+  ctx.restore();
+}
+
+function handleAim(dt) {
+  const t = tanks[turn];
+  const left = keys.has('a') || keys.has('arrowleft');
+  const right = keys.has('d') || keys.has('arrowright');
+  const up = keys.has('w') || keys.has('arrowup');
+  const down = keys.has('s') || keys.has('arrowdown');
+  if (left) t.ang = clamp(t.ang + 55 * dt, 5, 175);
+  if (right) t.ang = clamp(t.ang - 55 * dt, 5, 175);
+  if (up) t.power = clamp(t.power + 42 * dt, 12, 100);
+  if (down) t.power = clamp(t.power - 42 * dt, 12, 100);
+  if (charging) {
+    chargeT += dt;
+    if (chargeT > 0.18) t.power = clamp(12 + ((chargeT - 0.18) % 1.5) / 1.5 * 88, 12, 100);
+  }
+  hud();
+}
+
+function update(dt) {
+  shake = Math.max(0, shake - 28 * dt);
+  for (const p of fx) {
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 80 * dt; p.life -= dt;
+  }
+  fx = fx.filter(p => p.life > 0);
+
+  if (phase === 'aim') handleAim(dt);
+  else if (phase === 'cpu') cpuAimAndFire(dt);
+  else if (phase === 'fly') {
+    stepShell(dt);
+    stepTanks(dt);
+  } else if (phase === 'settle' || phase === 'over') {
+    collapsePass();
+    stepFalling(dt);
+    stepTanks(dt);
+    if (phase === 'settle' && !hasDirty() && falling.length === 0 && tanks.every(t => t.dead || t.grounded)) {
+      if (tanks[0].dead || tanks[1].dead) endGame();
+      else nextTurn();
+    }
+  }
+  render();
+}
+
+function aimFromMouse() {
+  if (phase !== 'aim') return;
+  const t = tanks[turn];
+  const dx = mx - t.x, dy = (t.y - 10) - my;
+  let a = Math.atan2(dy, dx) * 180 / Math.PI;
+  if (a < 0) a += 360;
+  if (a > 180 && a < 270) a = 175;
+  if (a >= 270) a = 5;
+  t.ang = clamp(a, 5, 175);
+  hud();
+}
+
+keys = new Set();
+mx = W / 2; my = H / 2;
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys.add(k);
+  if (k === ' ' || k === 'enter') {
+    e.preventDefault();
+    if (phase === 'aim' && !charging) { charging = true; chargeT = 0; }
+  }
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  keys.delete(k);
+  if ((k === ' ' || k === 'enter') && charging) {
+    charging = false;
+    fire();
+  }
+});
+cv.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect();
+  mx = (e.clientX - r.left) * (W / r.width);
+  my = (e.clientY - r.top) * (H / r.height);
+  aimFromMouse();
+});
+cv.addEventListener('mousedown', e => {
+  e.preventDefault();
+  if (e.button === 0 && phase === 'aim') fire();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (phase !== 'aim') return;
+  tanks[turn].power = clamp(tanks[turn].power - Math.sign(e.deltaY) * 4, 12, 100);
+  hud();
+}, { passive: false });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  requestAnimationFrame(loop);
+}
+newDuel(false);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
