@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Cup Pour</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#14161c;color:#c8c4b8;font-family:'Segoe UI',sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:14px 10px 22px;user-select:none;
+}
+h1{color:#e0c36a;letter-spacing:4px;font-size:1.38em}
+#sub{color:#7a8494;font-size:.82em;margin:2px 0 8px}
+#info{display:flex;flex-wrap:wrap;gap:10px 18px;justify-content:center;font-size:.88em;margin-bottom:8px}
+#info strong{color:#e0c36a}
+canvas{
+  border:2px solid #3a4250;border-radius:6px;display:block;max-width:100%;
+  box-shadow:0 0 36px rgba(0,0,0,.45);background:#1a2030;
+}
+#hint{margin-top:8px;max-width:920px;text-align:center;color:#6a7380;font-size:.8em;line-height:1.45}
+#hint b{color:#b8b090}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;justify-content:center;align-items:center}
+button, label.btn{
+  background:#242a34;color:#e0c36a;border:1px solid #5a6470;
+  padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:.9em;
+}
+button:hover, label.btn:hover{background:#323a46}
+button:disabled{opacity:.4;cursor:default}
+label.btn input{display:none}
+#thumb{
+  width:52px;height:52px;border:1px solid #5a6470;border-radius:6px;
+  object-fit:cover;background:#1a2030;display:none;
+}
+</style>
+</head>
+<body>
+<h1>CUP POUR</h1>
+<p id="sub">Deterministic dots · paint the pile with a picture · pour again and the picture returns</p>
+<div id="info">
+  <span>Dots <strong id="n">0</strong> / <span id="nmax">0</span></span>
+  <span>State <strong id="st">idle</strong></span>
+  <span>Mode <strong id="mode">sand</strong></span>
+</div>
+<canvas id="cv"></canvas>
+<p id="hint">
+  <b>Pour</b> fills the cup with the same packing every time (no randomness).
+  When it settles, <b>overlap an image</b> onto the pile — each dot keeps the color under it.
+  <b>Replay</b> respawns those same dots in the same order, so the picture rebuilds as they land.
+</p>
+<div class="btns">
+  <button id="bPour" onclick="startPour(false)">Pour</button>
+  <button id="bSample" onclick="useSampleArt()" disabled>Sample picture</button>
+  <label class="btn" id="bFile">Load image<input id="file" type="file" accept="image/*"></label>
+  <img id="thumb" alt="">
+  <button id="bReplay" onclick="startPour(true)" disabled>Replay picture</button>
+  <button onclick="hardReset()">Reset</button>
+</div>
+
+<script>
+'use strict';
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha: false });
+const W = 900, H = 700;
+cv.width = W; cv.height = H;
+
+const N = 2600;
+const R = 3.2;
+const TWO_R = R * 2;
+const G = 0.07;
+const DAMP = 0.9985;
+const SUB = 6;
+const ITER = 4;
+const SPAWN_PER = 16;
+const VMAX = R * 0.85;
+const CELL = TWO_R;
+const GCW = ((W / CELL) | 0) + 3;
+const GCH = ((H / CELL) | 0) + 3;
+
+const xs = new Float32Array(N);
+const ys = new Float32Array(N);
+const pxs = new Float32Array(N);
+const pys = new Float32Array(N);
+const cr = new Uint8Array(N);
+const cg = new Uint8Array(N);
+const cb = new Uint8Array(N);
+const pr = new Uint8Array(N);
+const pg = new Uint8Array(N);
+const pb = new Uint8Array(N);
+const next = new Int32Array(N);
+const heads = new Int32Array(GCW * GCH);
+
+const SAND = [
+  [214, 168, 72], [232, 196, 92], [196, 140, 58],
+  [240, 210, 120], [180, 124, 48], [220, 180, 80]
+];
+
+const segs = [];
+let alive, spawnI, painted, settled, running, replay, overlay;
+let stillFrames, srcImg, srcReady;
+
+function hash(i) {
+  i = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
+  i ^= i >>> 13;
+  i = Math.imul(i, 0xc2b2ae35);
+  i ^= i >>> 16;
+  return (i >>> 0) / 4294967296;
+}
+
+function addSeg(x1, y1, x2, y2, rad) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  segs.push({ x1, y1, x2, y2, dx, dy, len, inv: 1 / len, rad });
+}
+
+function buildCup() {
+  segs.length = 0;
+  const cx = W * 0.5, top = 248, bot = 662, half = 198, thick = 10;
+  addSeg(cx - 42, 6, cx - 70, top, 8);
+  addSeg(cx + 42, 6, cx + 70, top, 8);
+  addSeg(cx - 70, top, cx - half, bot - 28, thick);
+  addSeg(cx + 70, top, cx + half, bot - 28, thick);
+  const steps = 10;
+  for (let i = 0; i < steps; i++) {
+    const a0 = Math.PI * (i / steps);
+    const a1 = Math.PI * ((i + 1) / steps);
+    addSeg(
+      cx + Math.cos(Math.PI - a0) * half, bot - 28 + Math.sin(a0) * 26,
+      cx + Math.cos(Math.PI - a1) * half, bot - 28 + Math.sin(a1) * 26,
+      thick
+    );
+  }
+}
+
+function spawnPose(i) {
+  const j = hash(i) - 0.5;
+  const k = hash(i + 19) - 0.5;
+  return { x: W * 0.5 + j * 22, y: 14 + k * 6 };
+}
+
+function sandColor(i, slot) {
+  const c = SAND[i % SAND.length];
+  slot[0] = c[0]; slot[1] = c[1]; slot[2] = c[2];
+}
+
+function setAlive(n) {
+  alive = 0;
+  spawnI = 0;
+  stillFrames = 0;
+  settled = false;
+  running = true;
+  for (let i = 0; i < N; i++) {
+    xs[i] = -20; ys[i] = -20; pxs[i] = -20; pys[i] = -20;
+  }
+}
+
+function startPour(usePaint) {
+  if (usePaint && !painted) return;
+  replay = !!usePaint;
+  overlay = false;
+  setAlive(N);
+  hud();
+}
+
+function hardReset() {
+  running = false;
+  replay = false;
+  painted = false;
+  settled = false;
+  overlay = false;
+  alive = 0;
+  spawnI = 0;
+  document.getElementById('bReplay').disabled = true;
+  document.getElementById('bSample').disabled = true;
+  hud();
+  render();
+}
+
+function stepSpawn() {
+  let n = SPAWN_PER;
+  while (n-- > 0 && spawnI < N) {
+    const i = spawnI++;
+    const s = spawnPose(i);
+    xs[i] = s.x; ys[i] = s.y; pxs[i] = s.x; pys[i] = s.y;
+    if (replay) { cr[i] = pr[i]; cg[i] = pg[i]; cb[i] = pb[i]; }
+    else {
+      const c = SAND[i % SAND.length];
+      cr[i] = c[0]; cg[i] = c[1]; cb[i] = c[2];
+    }
+    alive = spawnI;
+  }
+}
+
+function rebuildGrid() {
+  heads.fill(-1);
+  const inv = 1 / CELL;
+  for (let i = 0; i < alive; i++) {
+    let cx = (xs[i] * inv) | 0;
+    let cy = (ys[i] * inv) | 0;
+    if (cx < 0) cx = 0; else if (cx >= GCW) cx = GCW - 1;
+    if (cy < 0) cy = 0; else if (cy >= GCH) cy = GCH - 1;
+    const id = cy * GCW + cx;
+    next[i] = heads[id];
+    heads[id] = i;
+  }
+}
+
+function collidePair(i, j) {
+  let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= TWO_R * TWO_R || d2 === 0) return;
+  const d = Math.sqrt(d2);
+  const push = (TWO_R - d) * 0.5;
+  dx = dx / d * push;
+  dy = dy / d * push;
+  xs[i] -= dx; ys[i] -= dy;
+  xs[j] += dx; ys[j] += dy;
+}
+
+function collideParticles() {
+  const inv = 1 / CELL;
+  for (let i = 0; i < alive; i++) {
+    const cx = (xs[i] * inv) | 0;
+    const cy = (ys[i] * inv) | 0;
+    for (let oy = -1; oy <= 1; oy++) {
+      const ty = cy + oy;
+      if (ty < 0 || ty >= GCH) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const tx = cx + ox;
+        if (tx < 0 || tx >= GCW) continue;
+        let j = heads[ty * GCW + tx];
+        while (j !== -1) {
+          if (j > i) collidePair(i, j);
+          j = next[j];
+        }
+      }
+    }
+  }
+}
+
+function collideSegs() {
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < alive; i++) {
+      let x = xs[i], y = ys[i];
+      for (let s = 0; s < segs.length; s++) {
+        const g = segs[s];
+        let t = ((x - g.x1) * g.dx + (y - g.y1) * g.dy) * g.inv * g.inv;
+        if (t < 0) t = 0; else if (t > 1) t = 1;
+        const px = g.x1 + g.dx * t, py = g.y1 + g.dy * t;
+        let dx = x - px, dy = y - py;
+        const d2 = dx * dx + dy * dy;
+        const min = R + g.rad;
+        if (d2 === 0) { x += 0.01; continue; }
+        if (d2 >= min * min) continue;
+        const d = Math.sqrt(d2);
+        const push = (min - d) / d;
+        x += dx * push;
+        y += dy * push;
+      }
+      if (x < R) x = R;
+      if (x > W - R) x = W - R;
+      if (y > H - R) y = H - R;
+      if (y < R) y = R;
+      xs[i] = x; ys[i] = y;
+    }
+  }
+}
+
+function integrate() {
+  const damp = spawnI >= N ? 0.988 : DAMP;
+  for (let i = 0; i < alive; i++) {
+    let vx = (xs[i] - pxs[i]) * damp;
+    let vy = (ys[i] - pys[i]) * damp + G;
+    const sp = Math.hypot(vx, vy);
+    if (spawnI >= N && sp < 0.05) { vx = 0; vy = 0; }
+    else if (sp > VMAX) {
+      const k = VMAX / sp;
+      vx *= k; vy *= k;
+    }
+    pxs[i] = xs[i];
+    pys[i] = ys[i];
+    xs[i] += vx;
+    ys[i] += vy;
+  }
+}
+
+function restMetric() {
+  let s = 0, n = 0;
+  for (let i = 0; i < alive; i++) {
+    if (ys[i] < 230) continue;
+    const vx = xs[i] - pxs[i], vy = ys[i] - pys[i];
+    s += vx * vx + vy * vy;
+    n++;
+  }
+  return n ? s / n : 0;
+}
+
+function drawArt(c, w, h) {
+  const g = c.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#3a6ea5');
+  g.addColorStop(0.7, '#7eb3d4');
+  g.addColorStop(0.7, '#4a9a4a');
+  g.addColorStop(1, '#2f6b32');
+  c.fillStyle = g;
+  c.fillRect(0, 0, w, h);
+  c.fillStyle = '#f2d25a';
+  c.beginPath(); c.arc(w * 0.82, h * 0.18, w * 0.11, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#e07a2f';
+  c.beginPath(); c.ellipse(w * 0.46, h * 0.58, w * 0.23, h * 0.17, -0.15, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(w * 0.68, h * 0.42, w * 0.105, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#c45c28';
+  c.beginPath(); c.ellipse(w * 0.42, h * 0.6, w * 0.12, h * 0.09, 0.4, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#c83c3c';
+  c.beginPath();
+  c.moveTo(w * 0.64, h * 0.34); c.lineTo(w * 0.67, h * 0.22); c.lineTo(w * 0.72, h * 0.34);
+  c.lineTo(w * 0.76, h * 0.24); c.lineTo(w * 0.78, h * 0.36);
+  c.closePath(); c.fill();
+  c.fillStyle = '#f0b429';
+  c.beginPath();
+  c.moveTo(w * 0.76, h * 0.42); c.lineTo(w * 0.9, h * 0.45); c.lineTo(w * 0.76, h * 0.5);
+  c.closePath(); c.fill();
+  c.fillStyle = '#f4f4f0';
+  c.beginPath(); c.arc(w * 0.71, h * 0.4, w * 0.022, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#1a1a18';
+  c.beginPath(); c.arc(w * 0.72, h * 0.4, w * 0.01, 0, Math.PI * 2); c.fill();
+  c.strokeStyle = '#c45c28';
+  c.lineWidth = w * 0.018; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(w * 0.38, h * 0.72); c.lineTo(w * 0.34, h * 0.86); c.stroke();
+  c.beginPath(); c.moveTo(w * 0.5, h * 0.73); c.lineTo(w * 0.54, h * 0.87); c.stroke();
+}
+
+function makeSample() {
+  const c = document.createElement('canvas');
+  c.width = 360; c.height = 360;
+  drawArt(c.getContext('2d'), 360, 360);
+  srcImg = c;
+  srcReady = true;
+  const th = document.getElementById('thumb');
+  th.src = c.toDataURL();
+  th.style.display = 'block';
+}
+
+function pileBox() {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (let i = 0; i < alive; i++) {
+    if (xs[i] < x0) x0 = xs[i];
+    if (ys[i] < y0) y0 = ys[i];
+    if (xs[i] > x1) x1 = xs[i];
+    if (ys[i] > y1) y1 = ys[i];
+  }
+  return { x0, y0, x1, y1 };
+}
+
+function sampleOntoPile() {
+  if (!srcReady || alive < 50) return;
+  const box = pileBox();
+  const iw = srcImg.width, ih = srcImg.height;
+  const ic = srcImg.getContext ? srcImg.getContext('2d') : (function () {
+    const c = document.createElement('canvas');
+    c.width = iw; c.height = ih;
+    c.getContext('2d').drawImage(srcImg, 0, 0);
+    return c.getContext('2d');
+  })();
+  const data = ic.getImageData(0, 0, iw, ih).data;
+  const bw = box.x1 - box.x0 || 1, bh = box.y1 - box.y0 || 1;
+  for (let i = 0; i < alive; i++) {
+    const u = (xs[i] - box.x0) / bw;
+    const v = (ys[i] - box.y0) / bh;
+    const ix = Math.max(0, Math.min(iw - 1, (u * (iw - 1)) | 0));
+    const iy = Math.max(0, Math.min(ih - 1, (v * (ih - 1)) | 0));
+    const p = (iy * iw + ix) * 4;
+    pr[i] = data[p]; pg[i] = data[p + 1]; pb[i] = data[p + 2];
+    cr[i] = pr[i]; cg[i] = pg[i]; cb[i] = pb[i];
+  }
+  painted = true;
+  overlay = true;
+  document.getElementById('bReplay').disabled = false;
+  hud();
+  render();
+}
+
+function useSampleArt() {
+  makeSample();
+  sampleOntoPile();
+}
+
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement('canvas');
+    const side = 400;
+    c.width = side; c.height = side;
+    const ic = c.getContext('2d');
+    ic.fillStyle = '#222'; ic.fillRect(0, 0, side, side);
+    const sc = Math.max(side / im.width, side / im.height);
+    const dw = im.width * sc, dh = im.height * sc;
+    ic.drawImage(im, (side - dw) / 2, (side - dh) / 2, dw, dh);
+    srcImg = c; srcReady = true;
+    const th = document.getElementById('thumb');
+    th.src = c.toDataURL(); th.style.display = 'block';
+    URL.revokeObjectURL(url);
+    if (settled) sampleOntoPile();
+  };
+  im.src = url;
+}
+
+function drawCup() {
+  ctx.strokeStyle = '#8a94a0';
+  ctx.lineWidth = 18;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const cx = W * 0.5, top = 248, bot = 662, half = 198;
+  ctx.beginPath();
+  ctx.moveTo(cx - 70, top);
+  ctx.lineTo(cx - half, bot - 28);
+  for (let i = 0; i <= 10; i++) {
+    const a = Math.PI * (i / 10);
+    ctx.lineTo(cx + Math.cos(Math.PI - a) * half, bot - 28 + Math.sin(a) * 26);
+  }
+  ctx.lineTo(cx + 70, top);
+  ctx.stroke();
+  ctx.strokeStyle = '#c5ccd4';
+  ctx.lineWidth = 5;
+  ctx.stroke();
+  ctx.strokeStyle = '#6a7380';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(cx - 42, 6); ctx.lineTo(cx - 70, top);
+  ctx.moveTo(cx + 42, 6); ctx.lineTo(cx + 70, top);
+  ctx.stroke();
+}
+
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#151c28');
+  g.addColorStop(1, '#243044');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function render() {
+  drawSky();
+  drawCup();
+  for (let i = 0; i < alive; i++) {
+    ctx.fillStyle = 'rgb(' + cr[i] + ',' + cg[i] + ',' + cb[i] + ')';
+    ctx.beginPath();
+    ctx.arc(xs[i], ys[i], R, 0, 6.283185307179586);
+    ctx.fill();
+  }
+  if (overlay && srcReady && settled) {
+    const box = pileBox();
+    ctx.globalAlpha = 0.28;
+    ctx.drawImage(srcImg, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function hud() {
+  document.getElementById('n').textContent = spawnI;
+  document.getElementById('nmax').textContent = N;
+  document.getElementById('st').textContent = settled ? 'settled' : (running ? (spawnI < N ? 'pouring' : 'settling') : 'idle');
+  document.getElementById('mode').textContent = replay ? 'picture replay' : (painted ? 'painted' : 'sand');
+  document.getElementById('bSample').disabled = !settled;
+}
+
+function update() {
+  if (running) {
+    if (spawnI < N) stepSpawn();
+    for (let s = 0; s < SUB; s++) {
+      integrate();
+      collideSegs();
+      rebuildGrid();
+      for (let k = 0; k < ITER; k++) collideParticles();
+      collideSegs();
+    }
+    if (spawnI >= N) {
+      const ms = restMetric();
+      if (ms < 0.55) stillFrames++;
+      else stillFrames = 0;
+      if (stillFrames > 22) {
+        settled = true;
+        running = false;
+        overlay = false;
+        document.getElementById('bSample').disabled = false;
+        if (srcReady && !replay) sampleOntoPile();
+        else if (painted) document.getElementById('bReplay').disabled = false;
+      }
+    }
+  }
+  hud();
+  render();
+  requestAnimationFrame(update);
+}
+
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) loadFile(f);
+});
+cv.addEventListener('dragover', e => { e.preventDefault(); });
+cv.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+
+buildCup();
+hardReset();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
