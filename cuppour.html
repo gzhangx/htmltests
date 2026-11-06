@@ -211,8 +211,7 @@ function rebuildGrid() {
 }
 
 function collidePair(i, j) {
-  if (xs[i] < CUP.l && xs[j] < CUP.l) return;
-  if (ys[i] < CUP.t + 20 || ys[j] < CUP.t + 20) return;
+  if (ys[i] < CUP.t && ys[j] < CUP.t) return;
   let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
   const d2 = dx * dx + dy * dy;
   if (d2 >= TWO_R * TWO_R || d2 === 0) return;
@@ -222,8 +221,8 @@ function collidePair(i, j) {
   dy = dy / d * push;
   xs[i] -= dx; ys[i] -= dy;
   xs[j] += dx; ys[j] += dy;
-  pxs[i] -= dx * 0.85; pys[i] -= dy * 0.85;
-  pxs[j] += dx * 0.85; pys[j] += dy * 0.85;
+  pxs[i] -= dx; pys[i] -= dy;
+  pxs[j] += dx; pys[j] += dy;
 }
 
 function collideParticles() {
@@ -329,7 +328,16 @@ function freezeAll() {
   }
 }
 
+function relaxPile() {
+  for (let pass = 0; pass < 18; pass++) {
+    rebuildGrid();
+    collideParticles();
+    collideSegs();
+  }
+}
+
 function markSettled() {
+  relaxPile();
   freezeAll();
   settled = true;
   running = false;
@@ -487,6 +495,9 @@ function render() {
     ctx.beginPath();
     ctx.arc(xs[i], ys[i], R, 0, 6.283185307179586);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(40,28,12,0.45)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
   }
   if (overlay && srcReady && settled) {
     const box = pileBox();
@@ -511,7 +522,8 @@ function update() {
       integrate();
       collideSegs();
       rebuildGrid();
-      for (let k = 0; k < ITER; k++) collideParticles();
+      const iters = spawnI >= N ? 8 : ITER;
+      for (let k = 0; k < iters; k++) collideParticles();
       collideSegs();
     }
     if (spawnI >= N) {
