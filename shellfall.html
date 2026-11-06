@@ -75,7 +75,7 @@ const MAX_HP = 100;
 let dirt, tcv, tctx;
 let tanks, shell, fx, falling;
 let turn, phase, vsCpu, wind, shake, keys, mx, my;
-let dirty, charging, chargeT;
+let dirty, charging, chargeT, settleT, flyT;
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
@@ -229,6 +229,8 @@ function newDuel(cpu) {
   shake = 0;
   charging = false;
   chargeT = 0;
+  settleT = 0;
+  flyT = 0;
   resetDirty();
   rollWind();
   hud();
@@ -322,7 +324,7 @@ function collapsePass() {
     for (let x = x0; x <= x1; x++) {
       const t = get(x, y);
       if (!loose(t)) continue;
-      if (supportScore(x, y) < 3) drop.push(x, y, t);
+      if (supportScore(x, y) < 2) drop.push(x, y, t);
     }
   }
   if (!drop.length) {
@@ -343,8 +345,10 @@ function collapsePass() {
     if (y < ny0) ny0 = y;
     if (y > ny1) ny1 = y;
   }
-  dirty.x0 = nx0 - 2; dirty.x1 = nx1 + 2;
-  dirty.y0 = 0; dirty.y1 = Math.max(y1, ny1 + 2);
+  dirty.x0 = clamp(nx0 - 2, 0, GW - 1);
+  dirty.x1 = clamp(nx1 + 2, 0, GW - 1);
+  dirty.y0 = 0;
+  dirty.y1 = clamp(Math.max(y1, ny1 + 2), 0, GH - 1);
   return true;
 }
 
@@ -422,6 +426,7 @@ function fire() {
     owner: t.id
   };
   phase = 'fly';
+  flyT = 0;
   burst(m.x, m.y, '#ffe8a8', 6, 50);
 }
 
@@ -456,6 +461,21 @@ function stepShell(dt) {
 
 function beginSettle() {
   phase = 'settle';
+  settleT = 0;
+}
+
+function finishSettle() {
+  falling.length = 0;
+  resetDirty();
+  for (const t of tanks) {
+    if (t.dead) continue;
+    const g = groundBelow(t.x, t.y);
+    if (g > t.y) t.y = g;
+    t.vy = 0;
+    t.grounded = true;
+  }
+  if (tanks[0].dead || tanks[1].dead) endGame();
+  else nextTurn();
 }
 
 function stepTanks(dt) {
@@ -508,11 +528,10 @@ function cpuAimAndFire(dt) {
     me.cpuT = 0;
   }
   me.cpuT += dt;
-  const p = Math.min(1, me.cpuT / 0.9);
-  me.ang = lerp(me.ang, me.cpuPlan.ang, 0.08);
-  me.power = lerp(me.power, me.cpuPlan.power, 0.08);
+  me.ang = lerp(me.ang, me.cpuPlan.ang, 0.12);
+  me.power = lerp(me.power, me.cpuPlan.power, 0.12);
   hud();
-  if (p >= 1 && Math.abs(me.ang - me.cpuPlan.ang) < 2) {
+  if (me.cpuT >= 0.85) {
     me.power = me.cpuPlan.power;
     me.ang = me.cpuPlan.ang;
     me.cpuPlan = null;
@@ -545,7 +564,11 @@ function hud() {
   document.getElementById('hp2').textContent = Math.max(0, tanks[1].hp | 0);
   const w = wind;
   document.getElementById('wind').textContent = !w ? 'calm' : (w > 0 ? '► ' : '◄ ') + Math.abs(w | 0);
-  document.getElementById('turn').textContent = phase === 'over' ? '—' : (turn === 0 ? 'A' : 'B');
+  document.getElementById('turn').textContent =
+    phase === 'over' ? '—' :
+    phase === 'settle' ? 'settling' :
+    phase === 'fly' ? 'shell' :
+    (turn === 0 ? 'A' : 'B');
   const t = tanks[turn];
   document.getElementById('ang').textContent = (t.ang | 0) + '°';
   document.getElementById('pow').textContent = (t.power | 0);
@@ -710,17 +733,24 @@ function update(dt) {
   if (phase === 'aim') handleAim(dt);
   else if (phase === 'cpu') cpuAimAndFire(dt);
   else if (phase === 'fly') {
+    flyT += dt;
     stepShell(dt);
     stepTanks(dt);
+    if (phase === 'fly' && flyT > 6) {
+      if (shell) explode(shell.x, clamp(shell.y, 0, H), 28, 40);
+      shell = null;
+      beginSettle();
+    }
   } else if (phase === 'settle' || phase === 'over') {
+    settleT += dt;
     collapsePass();
     stepFalling(dt);
     stepTanks(dt);
-    if (phase === 'settle' && !hasDirty() && falling.length === 0 && tanks.every(t => t.dead || t.grounded)) {
-      if (tanks[0].dead || tanks[1].dead) endGame();
-      else nextTurn();
-    }
+    const quiet = !hasDirty() && falling.length === 0;
+    const ready = quiet && tanks.every(t => t.dead || t.grounded);
+    if (phase === 'settle' && (ready || settleT > 3.2 || (quiet && settleT > 0.45))) finishSettle();
   }
+  hud();
   render();
 }
 
