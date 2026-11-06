@@ -84,8 +84,8 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 function idx(x, y) { return y * GW + x; }
 function inGrid(x, y) { return x >= 0 && y >= 0 && x < GW && y < GH; }
 function get(x, y) {
-  if (y >= GH) return 3;
-  if (!inGrid(x, y)) return 0;
+  if (y >= GH || x < 0 || x >= GW) return 3;
+  if (y < 0) return 0;
   return dirt[idx(x, y)];
 }
 function solid(x, y) { return get(x, y) !== 0; }
@@ -176,20 +176,6 @@ function genTerrain() {
       else setCell(x, y, y === gy ? 2 : 1);
     }
   }
-  // cave / overhang in the central hill so support can fail
-  const cx = (GW * 0.5) | 0;
-  for (let x = cx - 48; x < cx + 48; x++) {
-    for (let y = 0; y < GH; y++) {
-      if (!loose(get(x, y))) continue;
-      const dx = (x - cx) / 48;
-      const top = 0;
-      let surf = 0;
-      while (surf < GH && !solid(x, surf)) surf++;
-      const cy = surf + 18 + Math.sin(dx * 3) * 4;
-      const h = 16 + (1 - dx * dx) * 10;
-      if (y > cy && y < cy + h && y < GH - 10) setCell(x, y, 0);
-    }
-  }
   paintAll();
 }
 
@@ -202,7 +188,6 @@ function surfaceY(px) {
 function groundBelow(px, fromY) {
   const gx = clamp(Math.round(px / CELL), 0, GW - 1);
   let gy = clamp((fromY / CELL) | 0, 0, GH - 1);
-  while (gy > 1 && solid(gx, gy)) gy--;
   while (gy < GH - 1 && !solid(gx, gy + 1)) gy++;
   if (gy >= GH - 1 && !solid(gx, GH - 1)) return H + 50;
   return (gy + 1) * CELL;
@@ -477,8 +462,8 @@ function stepTanks(dt) {
   for (const t of tanks) {
     t.flash = Math.max(0, t.flash - dt);
     if (t.dead) continue;
-    const g = groundBelow(t.x, t.y - 4);
-    if (g > t.y + 3) {
+    const g = groundBelow(t.x, t.y);
+    if (g > t.y + 2) {
       t.grounded = false;
       t.vy += G * dt;
       t.y += t.vy * dt;
@@ -488,10 +473,9 @@ function stepTanks(dt) {
       }
     } else {
       if (t.vy > 260) hurt(t, (t.vy - 260) * 0.12);
-      t.y = g; t.vy = 0; t.grounded = true;
+      t.vy = 0;
+      t.grounded = true;
     }
-    const sl = groundBelow(t.x + 12, t.y - 4) - groundBelow(t.x - 12, t.y - 4);
-    if (t.grounded && Math.abs(sl) > 18) t.x -= Math.sign(sl) * 46 * dt;
     t.x = clamp(t.x, 18, W - 18);
     if (t.y > H - 6) hurt(t, 100);
   }
