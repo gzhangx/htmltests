@@ -36,7 +36,7 @@ label.btn input{display:none}
 </head>
 <body>
 <h1>CUP POUR</h1>
-<p id="sub">Deterministic dots · paint the pile with a picture · pour again and the picture returns</p>
+<p id="sub">Square cup · stream flies in from the side · same packing every pour</p>
 <div id="info">
   <span>Dots <strong id="n">0</strong> / <span id="nmax">0</span></span>
   <span>State <strong id="st">idle</strong></span>
@@ -67,12 +67,17 @@ cv.width = W; cv.height = H;
 const N = 2600;
 const R = 3.2;
 const TWO_R = R * 2;
-const G = 0.07;
+const G = 0.10;
 const DAMP = 0.9985;
 const SUB = 6;
 const ITER = 4;
-const SPAWN_PER = 16;
-const VMAX = R * 0.85;
+const SPAWN_PER = 10;
+const VMAX = R * 0.9;
+const VMAX_FLY = 12;
+const CUP = { l: 430, t: 215, s: 400 };
+CUP.r = CUP.l + CUP.s;
+CUP.b = CUP.t + CUP.s;
+const SPOUT = { x: 64, y: 168 };
 const CELL = TWO_R;
 const GCW = ((W / CELL) | 0) + 3;
 const GCH = ((H / CELL) | 0) + 3;
@@ -97,7 +102,7 @@ const SAND = [
 
 const segs = [];
 let alive, spawnI, painted, settled, running, replay, overlay;
-let stillFrames, srcImg, srcReady;
+let stillFrames, calmFrames, waitFrames, srcImg, srcReady;
 
 function hash(i) {
   i = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
@@ -107,35 +112,32 @@ function hash(i) {
   return (i >>> 0) / 4294967296;
 }
 
-function addSeg(x1, y1, x2, y2, rad) {
+function addSeg(x1, y1, x2, y2, rad, side) {
   const dx = x2 - x1, dy = y2 - y1;
   const len = Math.hypot(dx, dy) || 1;
-  segs.push({ x1, y1, x2, y2, dx, dy, len, inv: 1 / len, rad });
+  segs.push({ x1, y1, x2, y2, dx, dy, len, inv: 1 / len, rad, side: side || '' });
+}
+
+function inCup(x, y) {
+  return x > CUP.l + 8 && x < CUP.r - 8 && y > CUP.t + 4 && y < CUP.b - 6;
 }
 
 function buildCup() {
   segs.length = 0;
-  const cx = W * 0.5, top = 248, bot = 662, half = 198, thick = 10;
-  addSeg(cx - 42, 6, cx - 70, top, 8);
-  addSeg(cx + 42, 6, cx + 70, top, 8);
-  addSeg(cx - 70, top, cx - half, bot - 28, thick);
-  addSeg(cx + 70, top, cx + half, bot - 28, thick);
-  const steps = 10;
-  for (let i = 0; i < steps; i++) {
-    const a0 = Math.PI * (i / steps);
-    const a1 = Math.PI * ((i + 1) / steps);
-    addSeg(
-      cx + Math.cos(Math.PI - a0) * half, bot - 28 + Math.sin(a0) * 26,
-      cx + Math.cos(Math.PI - a1) * half, bot - 28 + Math.sin(a1) * 26,
-      thick
-    );
-  }
+  const t = 11;
+  addSeg(CUP.l, CUP.t + 12, CUP.l, CUP.b, t, 'left');
+  addSeg(CUP.r, CUP.t, CUP.r, CUP.b, t, 'right');
+  addSeg(CUP.l, CUP.b, CUP.r, CUP.b, t, 'bot');
 }
 
 function spawnPose(i) {
   const j = hash(i) - 0.5;
   const k = hash(i + 19) - 0.5;
-  return { x: W * 0.5 + j * 22, y: 14 + k * 6 };
+  const vx = 7.2 + hash(i + 3) * 0.06;
+  const vy = -2.25 + k * 0.06;
+  const x = SPOUT.x + j * 2;
+  const y = SPOUT.y + k * 2;
+  return { x, y, vx, vy };
 }
 
 function sandColor(i, slot) {
@@ -147,6 +149,8 @@ function setAlive(n) {
   alive = 0;
   spawnI = 0;
   stillFrames = 0;
+  calmFrames = 0;
+  waitFrames = 0;
   settled = false;
   running = true;
   for (let i = 0; i < N; i++) {
@@ -181,7 +185,8 @@ function stepSpawn() {
   while (n-- > 0 && spawnI < N) {
     const i = spawnI++;
     const s = spawnPose(i);
-    xs[i] = s.x; ys[i] = s.y; pxs[i] = s.x; pys[i] = s.y;
+    xs[i] = s.x; ys[i] = s.y;
+    pxs[i] = s.x - s.vx; pys[i] = s.y - s.vy;
     if (replay) { cr[i] = pr[i]; cg[i] = pg[i]; cb[i] = pb[i]; }
     else {
       const c = SAND[i % SAND.length];
@@ -206,6 +211,8 @@ function rebuildGrid() {
 }
 
 function collidePair(i, j) {
+  if (xs[i] < CUP.l && xs[j] < CUP.l) return;
+  if (ys[i] < CUP.t + 20 || ys[j] < CUP.t + 20) return;
   let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
   const d2 = dx * dx + dy * dy;
   if (d2 >= TWO_R * TWO_R || d2 === 0) return;
@@ -215,6 +222,8 @@ function collidePair(i, j) {
   dy = dy / d * push;
   xs[i] -= dx; ys[i] -= dy;
   xs[j] += dx; ys[j] += dy;
+  pxs[i] -= dx * 0.85; pys[i] -= dy * 0.85;
+  pxs[j] += dx * 0.85; pys[j] += dy * 0.85;
 }
 
 function collideParticles() {
@@ -242,8 +251,10 @@ function collideSegs() {
   for (let pass = 0; pass < 3; pass++) {
     for (let i = 0; i < alive; i++) {
       let x = xs[i], y = ys[i];
+      const ox = x, oy = y;
       for (let s = 0; s < segs.length; s++) {
         const g = segs[s];
+        if (g.side === 'left' && y < CUP.t + 10) continue;
         let t = ((x - g.x1) * g.dx + (y - g.y1) * g.dy) * g.inv * g.inv;
         if (t < 0) t = 0; else if (t > 1) t = 1;
         const px = g.x1 + g.dx * t, py = g.y1 + g.dy * t;
@@ -262,19 +273,37 @@ function collideSegs() {
       if (y > H - R) y = H - R;
       if (y < R) y = R;
       xs[i] = x; ys[i] = y;
+      pxs[i] += (x - ox) * 0.9;
+      pys[i] += (y - oy) * 0.9;
     }
   }
 }
 
-function integrate() {
-  const damp = spawnI >= N ? 0.988 : DAMP;
+function pileSurface() {
+  const bin = 10;
+  const counts = new Int32Array(((H / bin) | 0) + 1);
   for (let i = 0; i < alive; i++) {
+    if (xs[i] < CUP.l + 10 || xs[i] > CUP.r - 10 || ys[i] > CUP.b) continue;
+    counts[(ys[i] / bin) | 0]++;
+  }
+  for (let y = 0; y < counts.length; y++) {
+    if (counts[y] > 18) return y * bin;
+  }
+  return CUP.b;
+}
+
+function integrate() {
+  const poured = spawnI >= N;
+  const surface = poured ? pileSurface() : 0;
+  for (let i = 0; i < alive; i++) {
+    const inPile = poured && inCup(xs[i], ys[i]) && ys[i] > surface - 6;
+    const damp = inPile ? 0.8 : 0.998;
     let vx = (xs[i] - pxs[i]) * damp;
     let vy = (ys[i] - pys[i]) * damp + G;
     const sp = Math.hypot(vx, vy);
-    if (spawnI >= N && sp < 0.05) { vx = 0; vy = 0; }
-    else if (sp > VMAX) {
-      const k = VMAX / sp;
+    const cap = inPile ? 1.1 : VMAX_FLY;
+    if (sp > cap) {
+      const k = cap / sp;
       vx *= k; vy *= k;
     }
     pxs[i] = xs[i];
@@ -284,15 +313,30 @@ function integrate() {
   }
 }
 
-function restMetric() {
-  let s = 0, n = 0;
+function flying() {
+  const surface = pileSurface();
+  let n = 0;
   for (let i = 0; i < alive; i++) {
-    if (ys[i] < 230) continue;
-    const vx = xs[i] - pxs[i], vy = ys[i] - pys[i];
-    s += vx * vx + vy * vy;
-    n++;
+    if (ys[i] < surface - 20) n++;
   }
-  return n ? s / n : 0;
+  return n;
+}
+
+function freezeAll() {
+  for (let i = 0; i < alive; i++) {
+    pxs[i] = xs[i];
+    pys[i] = ys[i];
+  }
+}
+
+function markSettled() {
+  freezeAll();
+  settled = true;
+  running = false;
+  overlay = false;
+  document.getElementById('bSample').disabled = false;
+  if (srcReady && !replay) sampleOntoPile();
+  else if (painted) document.getElementById('bReplay').disabled = false;
 }
 
 function drawArt(c, w, h) {
@@ -343,6 +387,7 @@ function makeSample() {
 function pileBox() {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   for (let i = 0; i < alive; i++) {
+    if (!inCup(xs[i], ys[i])) continue;
     if (xs[i] < x0) x0 = xs[i];
     if (ys[i] < y0) y0 = ys[i];
     if (xs[i] > x1) x1 = xs[i];
@@ -364,6 +409,7 @@ function sampleOntoPile() {
   const data = ic.getImageData(0, 0, iw, ih).data;
   const bw = box.x1 - box.x0 || 1, bh = box.y1 - box.y0 || 1;
   for (let i = 0; i < alive; i++) {
+    if (!inCup(xs[i], ys[i])) continue;
     const u = (xs[i] - box.x0) / bw;
     const v = (ys[i] - box.y0) / bh;
     const ix = Math.max(0, Math.min(iw - 1, (u * (iw - 1)) | 0));
@@ -407,28 +453,22 @@ function loadFile(file) {
 
 function drawCup() {
   ctx.strokeStyle = '#8a94a0';
-  ctx.lineWidth = 18;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  const cx = W * 0.5, top = 248, bot = 662, half = 198;
+  ctx.lineWidth = 16;
+  ctx.lineCap = 'square';
+  ctx.lineJoin = 'miter';
   ctx.beginPath();
-  ctx.moveTo(cx - 70, top);
-  ctx.lineTo(cx - half, bot - 28);
-  for (let i = 0; i <= 10; i++) {
-    const a = Math.PI * (i / 10);
-    ctx.lineTo(cx + Math.cos(Math.PI - a) * half, bot - 28 + Math.sin(a) * 26);
-  }
-  ctx.lineTo(cx + 70, top);
+  ctx.moveTo(CUP.l, CUP.t);
+  ctx.lineTo(CUP.l, CUP.b);
+  ctx.lineTo(CUP.r, CUP.b);
+  ctx.lineTo(CUP.r, CUP.t);
   ctx.stroke();
   ctx.strokeStyle = '#c5ccd4';
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 4;
   ctx.stroke();
-  ctx.strokeStyle = '#6a7380';
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.moveTo(cx - 42, 6); ctx.lineTo(cx - 70, top);
-  ctx.moveTo(cx + 42, 6); ctx.lineTo(cx + 70, top);
-  ctx.stroke();
+  ctx.fillStyle = '#6a7380';
+  ctx.fillRect(SPOUT.x - 28, SPOUT.y - 11, 36, 22);
+  ctx.fillStyle = '#8a94a0';
+  ctx.fillRect(SPOUT.x + 6, SPOUT.y - 7, 18, 14);
 }
 
 function drawSky() {
@@ -475,17 +515,10 @@ function update() {
       collideSegs();
     }
     if (spawnI >= N) {
-      const ms = restMetric();
-      if (ms < 0.55) stillFrames++;
-      else stillFrames = 0;
-      if (stillFrames > 22) {
-        settled = true;
-        running = false;
-        overlay = false;
-        document.getElementById('bSample').disabled = false;
-        if (srcReady && !replay) sampleOntoPile();
-        else if (painted) document.getElementById('bReplay').disabled = false;
-      }
+      waitFrames++;
+      if (flying() === 0) calmFrames++;
+      else calmFrames = 0;
+      if (calmFrames > 8 || waitFrames > 240) markSettled();
     }
   }
   hud();
