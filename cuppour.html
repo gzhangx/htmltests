@@ -36,17 +36,18 @@ label.btn input{display:none}
 </head>
 <body>
 <h1>CUP POUR</h1>
-<p id="sub">Liquid jet into a square cup · same pour every time</p>
+<p id="sub">Fluid pour into a square cup · same stream every time</p>
 <div id="info">
-  <span>Dots <strong id="n">0</strong> / <span id="nmax">0</span></span>
+  <span>Liquid <strong id="n">0</strong> / <span id="nmax">0</span></span>
   <span>State <strong id="st">idle</strong></span>
   <span>Mode <strong id="mode">liquid</strong></span>
 </div>
 <canvas id="cv"></canvas>
 <p id="hint">
-  Drag the mouth to aim the pour. <b>Pour</b> sends one stream into the cup.
+  Drag the mouth to aim the pour. <b>Pour</b> lets liquid out of the mouth.
+  It falls in a stream, splashes, and levels in the cup.
   When it settles, <b>Sample picture</b> or <b>Load image</b> paints the pool.
-  <b>Replay</b> uses the same mouth and the same dots, so the picture comes back.
+  <b>Replay</b> uses the same mouth, so the picture comes back.
 </p>
 <div class="btns">
   <button id="bPour" onclick="startPour(false)">Pour</button>
@@ -64,84 +65,99 @@ const ctx = cv.getContext('2d', { alpha: false });
 const W = 900, H = 700;
 cv.width = W; cv.height = H;
 
-const N = 1400;
-const R = 3.5;
-const REST = 7.1;
+const N = 2800;
+const S = 8;
+const GW = (W / S) | 0;
+const GH = (H / S) | 0;
+const G = 0.2;
+const REST = 5.1;
 const REST2 = REST * REST;
-const BAND = REST * 1.55;
-const BAND2 = BAND * BAND;
-const G = 0.05;
-const SUB = 2;
-const ITER = 5;
-const SPAWN_PER = 4;
+const FLIP = 0.9;
+const P_ITERS = 28;
+const SEP_ITERS = 2;
+const SPAWN_PER = 6;
+const SPAWN_GAP = 5.2;
+const R = 5.4;
+
 const CUP = { l: 490, t: 248, s: 340 };
 CUP.r = CUP.l + CUP.s;
 CUP.b = CUP.t + CUP.s;
 const SPOUT = { x: 432, y: 156 };
-const CELL = REST;
-const GCW = ((W / CELL) | 0) + 3;
-const GCH = ((H / CELL) | 0) + 3;
+
+const AIR = 0, FLUID = 1, SOLID = 2;
 
 const xs = new Float32Array(N);
 const ys = new Float32Array(N);
-const ox = new Float32Array(N);
-const oy = new Float32Array(N);
 const vxs = new Float32Array(N);
 const vys = new Float32Array(N);
-const nvx = new Float32Array(N);
-const nvy = new Float32Array(N);
 const cr = new Uint8Array(N);
 const cg = new Uint8Array(N);
 const cb = new Uint8Array(N);
 const pr = new Uint8Array(N);
 const pg = new Uint8Array(N);
 const pb = new Uint8Array(N);
-const next = new Int32Array(N);
-const heads = new Int32Array(GCW * GCH);
 
-const LIQUID = [
-  [232, 184, 72], [244, 206, 96], [210, 150, 48],
-  [250, 220, 130], [196, 132, 40]
-];
+const NU = (GW + 1) * GH;
+const NV = GW * (GH + 1);
+const GC = GW * GH;
+const U = new Float32Array(NU);
+const V = new Float32Array(NV);
+const U0 = new Float32Array(NU);
+const V0 = new Float32Array(NV);
+const WU = new Float32Array(NU);
+const WV = new Float32Array(NV);
+const P = new Float32Array(GC);
+const DIV = new Float32Array(GC);
+const MARK = new Uint8Array(GC);
+const SOLIDM = new Uint8Array(GC);
+
+const HCELLS = ((W / REST) | 0) + 3;
+const VCELLS = ((H / REST) | 0) + 3;
+const heads = new Int32Array(HCELLS * VCELLS);
+const next = new Int32Array(N);
+
+const LIQUID = [224, 168, 52];
+const LIQUID_EDGE = [138, 92, 24];
 
 let alive, spawnI, painted, settled, running, replay, overlay;
 let calmFrames, srcImg, srcReady;
 let dragging = false, hoverSpout = false, grabDx = 0, grabDy = 0;
 let pourX = SPOUT.x, pourY = SPOUT.y;
 
-function hash(i) {
-  i = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
-  i ^= i >>> 13;
-  i = Math.imul(i, 0xc2b2ae35);
-  i ^= i >>> 16;
-  return (i >>> 0) / 4294967296;
+function ui(i, j) { return i + j * (GW + 1); }
+function vi(i, j) { return i + j * GW; }
+function ci(i, j) { return i + j * GW; }
+
+function buildSolids() {
+  SOLIDM.fill(0);
+  const wall = 7;
+  for (let j = 0; j < GH; j++) {
+    for (let i = 0; i < GW; i++) {
+      const x = (i + 0.5) * S;
+      const y = (j + 0.5) * S;
+      const left = Math.abs(x - CUP.l) <= wall && y >= CUP.t && y <= CUP.b + wall;
+      const right = Math.abs(x - CUP.r) <= wall && y >= CUP.t && y <= CUP.b + wall;
+      const bot = Math.abs(y - CUP.b) <= wall && x >= CUP.l - wall && x <= CUP.r + wall;
+      const border = i === 0 || j === 0 || i === GW - 1 || j === GH - 1 || y > H - 14;
+      if (left || right || bot || border) SOLIDM[ci(i, j)] = 1;
+    }
+  }
 }
 
 function inCup(x, y) {
-  return x > CUP.l + 8 && x < CUP.r - 8 && y > CUP.t && y < CUP.b - 6;
+  return x > CUP.l + 10 && x < CUP.r - 10 && y > CUP.t && y < CUP.b - 8;
 }
 
 function launch() {
-  const lipX = CUP.l + 4;
-  const aimY = CUP.t - 58;
-  const dx = Math.max(48, lipX - SPOUT.x);
-  const drop = Math.max(10, aimY - SPOUT.y);
-  const vy = 0.12;
+  const lipX = CUP.l + 12;
+  const aimY = CUP.t - 34;
+  const dx = Math.max(36, lipX - SPOUT.x);
+  const drop = Math.max(8, aimY - SPOUT.y);
+  const vy = 0.15;
   const a = 0.5 * G;
   const t = (-vy + Math.sqrt(vy * vy + 4 * a * drop)) / (2 * a);
-  const vx = Math.max(3.3, Math.min(6.6, (dx / t) * 1.35));
+  const vx = Math.max(4.4, Math.min(8.2, dx / t));
   return { vx, vy };
-}
-
-function spawnPose(i) {
-  const lane = i % 4;
-  const v = launch();
-  return {
-    x: SPOUT.x + lane * 2.2,
-    y: SPOUT.y + (lane - 1.5) * 6.2,
-    vx: v.vx,
-    vy: v.vy
-  };
 }
 
 function spoutBox() {
@@ -173,8 +189,7 @@ function setAlive() {
   settled = false;
   running = true;
   for (let i = 0; i < N; i++) {
-    xs[i] = -30; ys[i] = -30;
-    ox[i] = -30; oy[i] = -30;
+    xs[i] = -40; ys[i] = -40;
     vxs[i] = 0; vys[i] = 0;
   }
 }
@@ -205,153 +220,276 @@ function hardReset() {
   render();
 }
 
+function nearLiquid(x, y) {
+  const reach = SPAWN_GAP * 0.85;
+  const reach2 = reach * reach;
+  for (let i = 0; i < alive; i++) {
+    const dx = xs[i] - x, dy = ys[i] - y;
+    if (dx * dx + dy * dy < reach2) return true;
+  }
+  return false;
+}
+
 function stepSpawn() {
-  let n = SPAWN_PER;
-  while (n-- > 0 && spawnI < N) {
+  const v = launch();
+  const mid = (SPAWN_PER - 1) * 0.5;
+  for (let lane = 0; lane < SPAWN_PER && spawnI < N; lane++) {
+    const x = SPOUT.x + 6;
+    const y = SPOUT.y + (lane - mid) * SPAWN_GAP;
+    if (nearLiquid(x, y)) continue;
     const i = spawnI++;
-    const s = spawnPose(i);
-    xs[i] = s.x; ys[i] = s.y;
-    ox[i] = s.x - s.vx; oy[i] = s.y - s.vy;
-    vxs[i] = s.vx; vys[i] = s.vy;
+    xs[i] = x;
+    ys[i] = y;
+    vxs[i] = v.vx;
+    vys[i] = v.vy;
     if (replay) {
       cr[i] = pr[i]; cg[i] = pg[i]; cb[i] = pb[i];
     } else {
-      const c = LIQUID[i % LIQUID.length];
-      cr[i] = c[0]; cg[i] = c[1]; cb[i] = c[2];
+      cr[i] = LIQUID[0]; cg[i] = LIQUID[1]; cb[i] = LIQUID[2];
     }
     alive = spawnI;
   }
 }
 
-function rebuildGrid() {
+function bilerp(field, x, y, stride, nx, ny) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  let sum = 0, w = 0;
+  for (let dj = 0; dj <= 1; dj++) {
+    const j = y0 + dj;
+    if (j < 0 || j >= ny) continue;
+    const wy = dj ? fy : 1 - fy;
+    for (let di = 0; di <= 1; di++) {
+      const i = x0 + di;
+      if (i < 0 || i >= nx) continue;
+      const ww = wy * (di ? fx : 1 - fx);
+      sum += field[i + j * stride] * ww;
+      w += ww;
+    }
+  }
+  return w > 1e-5 ? sum / w : 0;
+}
+
+function transferToGrid() {
+  U.fill(0); V.fill(0); WU.fill(0); WV.fill(0);
+  for (let p = 0; p < alive; p++) {
+    const vx = vxs[p], vy = vys[p];
+    const ux = xs[p] / S;
+    const uy = ys[p] / S - 0.5;
+    const u0 = Math.floor(ux), v0 = Math.floor(uy);
+    const fx = ux - u0, fy = uy - v0;
+    for (let dj = 0; dj <= 1; dj++) {
+      const j = v0 + dj;
+      if (j < 0 || j >= GH) continue;
+      const wy = dj ? fy : 1 - fy;
+      for (let di = 0; di <= 1; di++) {
+        const i = u0 + di;
+        if (i < 0 || i > GW) continue;
+        const w = wy * (di ? fx : 1 - fx);
+        const id = ui(i, j);
+        U[id] += vx * w;
+        WU[id] += w;
+      }
+    }
+    const vxg = xs[p] / S - 0.5;
+    const vyg = ys[p] / S;
+    const i0 = Math.floor(vxg), j0 = Math.floor(vyg);
+    const gx = vxg - i0, gy = vyg - j0;
+    for (let dj = 0; dj <= 1; dj++) {
+      const j = j0 + dj;
+      if (j < 0 || j > GH) continue;
+      const wy = dj ? gy : 1 - gy;
+      for (let di = 0; di <= 1; di++) {
+        const i = i0 + di;
+        if (i < 0 || i >= GW) continue;
+        const w = wy * (di ? gx : 1 - gx);
+        const id = vi(i, j);
+        V[id] += vy * w;
+        WV[id] += w;
+      }
+    }
+  }
+  for (let i = 0; i < NU; i++) if (WU[i] > 1e-4) U[i] /= WU[i]; else U[i] = 0;
+  for (let i = 0; i < NV; i++) if (WV[i] > 1e-4) V[i] /= WV[i]; else V[i] = 0;
+}
+
+function markCells() {
+  MARK.fill(AIR);
+  for (let j = 0; j < GH; j++) {
+    for (let i = 0; i < GW; i++) {
+      if (SOLIDM[ci(i, j)]) MARK[ci(i, j)] = SOLID;
+    }
+  }
+  for (let p = 0; p < alive; p++) {
+    const i = (xs[p] / S) | 0;
+    const j = (ys[p] / S) | 0;
+    if (i < 0 || j < 0 || i >= GW || j >= GH) continue;
+    const id = ci(i, j);
+    if (MARK[id] !== SOLID) MARK[id] = FLUID;
+  }
+}
+
+function zeroSolidFaces(u, v) {
+  for (let j = 0; j < GH; j++) {
+    for (let i = 0; i < GW; i++) {
+      if (MARK[ci(i, j)] !== SOLID) continue;
+      u[ui(i, j)] = 0;
+      u[ui(i + 1, j)] = 0;
+      v[vi(i, j)] = 0;
+      v[vi(i, j + 1)] = 0;
+    }
+  }
+}
+
+function project() {
+  for (let j = 0; j < GH; j++) {
+    for (let i = 0; i < GW; i++) {
+      const id = ci(i, j);
+      if (MARK[id] !== FLUID) { DIV[id] = 0; continue; }
+      DIV[id] = (U[ui(i + 1, j)] - U[ui(i, j)] + V[vi(i, j + 1)] - V[vi(i, j)]) / S;
+    }
+  }
+  P.fill(0);
+  for (let k = 0; k < P_ITERS; k++) {
+    for (let j = 0; j < GH; j++) {
+      for (let i = 0; i < GW; i++) {
+        const id = ci(i, j);
+        if (MARK[id] !== FLUID) continue;
+        let sum = 0, n = 0;
+        if (i > 0 && MARK[id - 1] !== SOLID) { sum += P[id - 1]; n++; }
+        if (i + 1 < GW && MARK[id + 1] !== SOLID) { sum += P[id + 1]; n++; }
+        if (j > 0 && MARK[id - GW] !== SOLID) { sum += P[id - GW]; n++; }
+        if (j + 1 < GH && MARK[id + GW] !== SOLID) { sum += P[id + GW]; n++; }
+        if (!n) continue;
+        const target = Math.max(0, (sum - DIV[id]) / n);
+        P[id] += 1.4 * (target - P[id]);
+      }
+    }
+  }
+  for (let j = 0; j < GH; j++) {
+    for (let i = 1; i < GW; i++) {
+      const left = MARK[ci(i - 1, j)];
+      const right = MARK[ci(i, j)];
+      if (left === SOLID || right === SOLID) continue;
+      if (left !== FLUID && right !== FLUID) continue;
+      const pL = left === FLUID ? P[ci(i - 1, j)] : 0;
+      const pR = right === FLUID ? P[ci(i, j)] : 0;
+      U[ui(i, j)] -= (pR - pL) * S;
+    }
+  }
+  for (let j = 1; j < GH; j++) {
+    for (let i = 0; i < GW; i++) {
+      const up = MARK[ci(i, j - 1)];
+      const down = MARK[ci(i, j)];
+      if (up === SOLID || down === SOLID) continue;
+      if (up !== FLUID && down !== FLUID) continue;
+      const pU = up === FLUID ? P[ci(i, j - 1)] : 0;
+      const pD = down === FLUID ? P[ci(i, j)] : 0;
+      V[vi(i, j)] -= (pD - pU) * S;
+    }
+  }
+  zeroSolidFaces(U, V);
+}
+
+function transferToParticles() {
+  for (let p = 0; p < alive; p++) {
+    const picX = bilerp(U, xs[p] / S, ys[p] / S - 0.5, GW + 1, GW + 1, GH);
+    const picY = bilerp(V, xs[p] / S - 0.5, ys[p] / S, GW, GW, GH + 1);
+    const oldX = bilerp(U0, xs[p] / S, ys[p] / S - 0.5, GW + 1, GW + 1, GH);
+    const oldY = bilerp(V0, xs[p] / S - 0.5, ys[p] / S, GW, GW, GH + 1);
+    const flipX = vxs[p] + (picX - oldX);
+    const flipY = vys[p] + (picY - oldY);
+    vxs[p] = FLIP * flipX + (1 - FLIP) * picX;
+    vys[p] = FLIP * flipY + (1 - FLIP) * picY;
+    const sp = vxs[p] * vxs[p] + vys[p] * vys[p];
+    if (sp > 100) {
+      const s = 10 / Math.sqrt(sp);
+      vxs[p] *= s; vys[p] *= s;
+    }
+  }
+}
+
+function hashBuild() {
   heads.fill(-1);
-  const inv = 1 / CELL;
+  const inv = 1 / REST;
   for (let i = 0; i < alive; i++) {
     let cx = (xs[i] * inv) | 0;
     let cy = (ys[i] * inv) | 0;
-    if (cx < 0) cx = 0; else if (cx >= GCW) cx = GCW - 1;
-    if (cy < 0) cy = 0; else if (cy >= GCH) cy = GCH - 1;
-    const id = cy * GCW + cx;
+    if (cx < 0) cx = 0; else if (cx >= HCELLS) cx = HCELLS - 1;
+    if (cy < 0) cy = 0; else if (cy >= VCELLS) cy = VCELLS - 1;
+    const id = cy * HCELLS + cx;
     next[i] = heads[id];
     heads[id] = i;
   }
 }
 
-function forNeighbors(i, fn) {
-  const inv = 1 / CELL;
-  const cx = (xs[i] * inv) | 0;
-  const cy = (ys[i] * inv) | 0;
-  for (let oy = -1; oy <= 1; oy++) {
-    const ty = cy + oy;
-    if (ty < 0 || ty >= GCH) continue;
-    for (let ox2 = -1; ox2 <= 1; ox2++) {
-      const tx = cx + ox2;
-      if (tx < 0 || tx >= GCW) continue;
-      let j = heads[ty * GCW + tx];
-      while (j !== -1) {
-        if (j > i) fn(j);
-        j = next[j];
-      }
-    }
-  }
-}
-
-function walls(i) {
-  const pad = R + 3;
-  const y = ys[i];
-  if (y > CUP.t && xs[i] < CUP.l + pad && xs[i] > CUP.l - 80) xs[i] = CUP.l + pad;
-  if (y > CUP.t && xs[i] > CUP.r - pad && xs[i] < CUP.r + 80) xs[i] = CUP.r - pad;
-  if (xs[i] > CUP.l && xs[i] < CUP.r && ys[i] > CUP.b - pad) ys[i] = CUP.b - pad;
-  if (xs[i] < R) xs[i] = R;
-  if (xs[i] > W - R) xs[i] = W - R;
-  if (ys[i] > H - R) ys[i] = H - R;
-  if (ys[i] < R) ys[i] = R;
-}
-
-function predict() {
+function separate() {
+  hashBuild();
+  const inv = 1 / REST;
   for (let i = 0; i < alive; i++) {
-    ox[i] = xs[i];
-    oy[i] = ys[i];
-    vys[i] += G;
-    if (ys[i] < CUP.t && vys[i] < 0) vys[i] = 0;
-    if (ys[i] > CUP.t + 30 && xs[i] > CUP.l && xs[i] < CUP.r) vxs[i] *= 0.9;
-    xs[i] += vxs[i];
-    ys[i] += vys[i];
-    walls(i);
-  }
-}
-
-function relax() {
-  for (let i = 0; i < alive; i++) {
-    forNeighbors(i, j => {
-      let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= BAND2 || d2 < 1e-6) return;
-      const d = Math.sqrt(d2);
-      const nx = dx / d, ny = dy / d;
-      if (d < REST) {
-        const push = (REST - d) * 0.5;
-        xs[i] -= nx * push; ys[i] -= ny * push;
-        xs[j] += nx * push; ys[j] += ny * push;
-      } else {
-        const pull = (d - REST) * 0.035;
-        xs[i] += nx * pull; ys[i] += ny * pull;
-        xs[j] -= nx * pull; ys[j] -= ny * pull;
-      }
-    });
-  }
-}
-
-function deriveVelocity() {
-  for (let i = 0; i < alive; i++) {
-    vxs[i] = (xs[i] - ox[i]) * 0.995;
-    vys[i] = (ys[i] - oy[i]) * 0.995;
-  }
-}
-
-function viscosity() {
-  rebuildGrid();
-  for (let i = 0; i < alive; i++) {
-    let sx = vxs[i], sy = vys[i], w = 1;
-    const inv = 1 / CELL;
     const cx = (xs[i] * inv) | 0;
     const cy = (ys[i] * inv) | 0;
-    for (let oy2 = -1; oy2 <= 1; oy2++) {
-      const ty = cy + oy2;
-      if (ty < 0 || ty >= GCH) continue;
-      for (let ox2 = -1; ox2 <= 1; ox2++) {
-        const tx = cx + ox2;
-        if (tx < 0 || tx >= GCW) continue;
-        let j = heads[ty * GCW + tx];
+    for (let oy = -1; oy <= 1; oy++) {
+      const ty = cy + oy;
+      if (ty < 0 || ty >= VCELLS) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const tx = cx + ox;
+        if (tx < 0 || tx >= HCELLS) continue;
+        let j = heads[ty * HCELLS + tx];
         while (j !== -1) {
-          if (j !== i) {
-            const dx = xs[j] - xs[i], dy = ys[j] - ys[i];
-            if (dx * dx + dy * dy < BAND2) {
-              sx += vxs[j]; sy += vys[j]; w++;
+          if (j > i) {
+            let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
+            const d2 = dx * dx + dy * dy;
+            if (d2 < REST2 && d2 > 1e-6) {
+              const d = Math.sqrt(d2);
+              const push = (REST - d) * 0.5;
+              const nx = dx / d, ny = dy / d;
+              xs[i] -= nx * push; ys[i] -= ny * push;
+              xs[j] += nx * push; ys[j] += ny * push;
             }
           }
           j = next[j];
         }
       }
     }
-    nvx[i] = vxs[i] * 0.62 + (sx / w) * 0.38;
-    nvy[i] = vys[i] * 0.62 + (sy / w) * 0.38;
-  }
-  for (let i = 0; i < alive; i++) {
-    vxs[i] = nvx[i];
-    vys[i] = nvy[i];
   }
 }
 
-function fluidStep() {
-  predict();
-  for (let k = 0; k < ITER; k++) {
-    rebuildGrid();
-    relax();
-    for (let i = 0; i < alive; i++) walls(i);
+function walls(i) {
+  const pad = 8;
+  if (ys[i] > CUP.t && xs[i] < CUP.l + pad && xs[i] > CUP.l - 16) {
+    xs[i] = CUP.l + pad;
+    if (vxs[i] < 0) vxs[i] = 0;
   }
-  deriveVelocity();
-  viscosity();
+  if (ys[i] > CUP.t && xs[i] > CUP.r - pad && xs[i] < CUP.r + 16) {
+    xs[i] = CUP.r - pad;
+    if (vxs[i] > 0) vxs[i] = 0;
+  }
+  if (xs[i] > CUP.l && xs[i] < CUP.r && ys[i] > CUP.b - pad) {
+    ys[i] = CUP.b - pad;
+    if (vys[i] > 0) vys[i] = 0;
+  }
+  if (xs[i] < 6) { xs[i] = 6; if (vxs[i] < 0) vxs[i] = 0; }
+  if (xs[i] > W - 6) { xs[i] = W - 6; if (vxs[i] > 0) vxs[i] = 0; }
+  if (ys[i] > H - 10) { ys[i] = H - 10; if (vys[i] > 0) vys[i] = 0; }
+  if (ys[i] < 6) { ys[i] = 6; if (vys[i] < 0) vys[i] = 0; }
+}
+
+function fluidStep() {
+  for (let i = 0; i < alive; i++) vys[i] += G;
+  transferToGrid();
+  markCells();
+  zeroSolidFaces(U, V);
+  U0.set(U);
+  V0.set(V);
+  project();
+  transferToParticles();
+  for (let i = 0; i < alive; i++) {
+    xs[i] += vxs[i];
+    ys[i] += vys[i];
+  }
+  for (let k = 0; k < SEP_ITERS; k++) separate();
+  for (let i = 0; i < alive; i++) walls(i);
 }
 
 function airborne() {
@@ -359,9 +497,9 @@ function airborne() {
   for (let i = 0; i < alive; i++) {
     if (ys[i] < CUP.t - 4) sky++;
     const sp = vxs[i] * vxs[i] + vys[i] * vys[i];
-    if (sp > 0.4) fast++;
+    if (sp > 0.35) fast++;
   }
-  return sky + (fast > 4 ? fast : 0);
+  return sky + (fast > 12 ? fast : 0);
 }
 
 function markSettled() {
@@ -482,6 +620,25 @@ function drawSky() {
   ctx.fillRect(0, 0, W, H);
 }
 
+function drawLiquid() {
+  if (!alive) return;
+  const colored = painted;
+  for (let pass = 0; pass < 2; pass++) {
+    const rad = pass === 0 ? R + 2.4 : R;
+    for (let i = 0; i < alive; i++) {
+      if (colored) {
+        const s = pass === 0 ? 0.55 : 1;
+        ctx.fillStyle = 'rgb(' + ((cr[i] * s) | 0) + ',' + ((cg[i] * s) | 0) + ',' + ((cb[i] * s) | 0) + ')';
+      } else {
+        ctx.fillStyle = pass === 0 ? 'rgb(138,92,24)' : 'rgb(224,168,52)';
+      }
+      ctx.beginPath();
+      ctx.arc(xs[i], ys[i], rad, 0, 6.283185307179586);
+      ctx.fill();
+    }
+  }
+}
+
 function drawCup() {
   ctx.strokeStyle = '#9aa3ae';
   ctx.lineWidth = 14;
@@ -501,12 +658,12 @@ function drawAim() {
   let x = SPOUT.x, y = SPOUT.y, vx = v.vx, vy = v.vy;
   ctx.beginPath();
   ctx.moveTo(x, y);
-  for (let i = 0; i < 110; i++) {
+  for (let i = 0; i < 160; i++) {
     vy += G;
     x += vx;
     y += vy;
     ctx.lineTo(x, y);
-    if (y > CUP.t + 70 && x > CUP.l && x < CUP.r) break;
+    if (y > CUP.t + 90 && x > CUP.l && x < CUP.r) break;
     if (x > CUP.r + 10 || y > CUP.b) break;
   }
   ctx.strokeStyle = 'rgba(224,195,106,0.4)';
@@ -537,13 +694,8 @@ function drawSpout() {
 
 function render() {
   drawSky();
+  drawLiquid();
   drawCup();
-  for (let i = 0; i < alive; i++) {
-    ctx.fillStyle = 'rgb(' + cr[i] + ',' + cg[i] + ',' + cb[i] + ')';
-    ctx.beginPath();
-    ctx.arc(xs[i], ys[i], R + 0.6, 0, 6.283185307179586);
-    ctx.fill();
-  }
   if (overlay && srcReady && settled) {
     const box = pileBox();
     ctx.globalAlpha = 0.22;
@@ -563,11 +715,11 @@ function hud() {
 function update() {
   if (running) {
     if (spawnI < N) stepSpawn();
-    for (let s = 0; s < SUB; s++) fluidStep();
+    fluidStep();
     if (spawnI >= N) {
       if (airborne() === 0) calmFrames++;
       else calmFrames = 0;
-      if (calmFrames > 20) markSettled();
+      if (calmFrames > 24) markSettled();
     }
   }
   hud();
@@ -612,6 +764,7 @@ cv.addEventListener('drop', e => {
   if (f) loadFile(f);
 });
 
+buildSolids();
 hardReset();
 requestAnimationFrame(update);
 </script>
