@@ -67,17 +67,17 @@ cv.width = W; cv.height = H;
 const N = 2600;
 const R = 3.2;
 const TWO_R = R * 2;
-const G = 0.10;
+const G = 0.16;
 const DAMP = 0.9985;
 const SUB = 6;
 const ITER = 4;
-const SPAWN_PER = 10;
+const SPAWN_PER = 5;
 const VMAX = R * 0.9;
 const VMAX_FLY = 12;
 const CUP = { l: 430, t: 215, s: 400 };
 CUP.r = CUP.l + CUP.s;
 CUP.b = CUP.t + CUP.s;
-const SPOUT = { x: 64, y: 168 };
+const SPOUT = { x: 210, y: 96 };
 const CELL = TWO_R;
 const GCW = ((W / CELL) | 0) + 3;
 const GCH = ((H / CELL) | 0) + 3;
@@ -133,10 +133,10 @@ function buildCup() {
 function spawnPose(i) {
   const j = hash(i) - 0.5;
   const k = hash(i + 19) - 0.5;
-  const vx = 7.2 + hash(i + 3) * 0.06;
-  const vy = -2.25 + k * 0.06;
-  const x = SPOUT.x + j * 2;
-  const y = SPOUT.y + k * 2;
+  const vx = 5.5;
+  const vy = 0.55;
+  const x = SPOUT.x + j * 1.1;
+  const y = SPOUT.y + k * 1.1;
   return { x, y, vx, vy };
 }
 
@@ -211,18 +211,29 @@ function rebuildGrid() {
 }
 
 function collidePair(i, j) {
-  if (ys[i] < CUP.t && ys[j] < CUP.t) return;
   let dx = xs[j] - xs[i], dy = ys[j] - ys[i];
   const d2 = dx * dx + dy * dy;
   if (d2 >= TWO_R * TWO_R || d2 === 0) return;
+  const sky = ys[i] < CUP.t + 8 && ys[j] < CUP.t + 8;
   const d = Math.sqrt(d2);
-  const push = (TWO_R - d) * 0.5;
-  dx = dx / d * push;
-  dy = dy / d * push;
+  const push = (TWO_R - d) * (sky ? 0.2 : 0.5);
+  const nx = dx / d, ny = dy / d;
+  dx = nx * push;
+  dy = ny * push;
   xs[i] -= dx; ys[i] -= dy;
   xs[j] += dx; ys[j] += dy;
-  pxs[i] -= dx; pys[i] -= dy;
-  pxs[j] += dx; pys[j] += dy;
+  if (sky) {
+    const ivx = xs[i] - pxs[i], ivy = ys[i] - pys[i];
+    const jvx = xs[j] - pxs[j], jvy = ys[j] - pys[j];
+    const mx = (ivx + jvx) * 0.5, my = (ivy + jvy) * 0.5;
+    pxs[i] = xs[i] - (ivx * 0.55 + mx * 0.45);
+    pys[i] = ys[i] - (ivy * 0.55 + my * 0.45);
+    pxs[j] = xs[j] - (jvx * 0.55 + mx * 0.45);
+    pys[j] = ys[j] - (jvy * 0.55 + my * 0.45);
+  } else {
+    pxs[i] -= dx; pys[i] -= dy;
+    pxs[j] += dx; pys[j] += dy;
+  }
 }
 
 function collideParticles() {
@@ -253,7 +264,7 @@ function collideSegs() {
       const ox = x, oy = y;
       for (let s = 0; s < segs.length; s++) {
         const g = segs[s];
-        if (g.side === 'left' && y < CUP.t + 10) continue;
+        if ((g.side === 'left' || g.side === 'right') && y < CUP.t + 14) continue;
         let t = ((x - g.x1) * g.dx + (y - g.y1) * g.dy) * g.inv * g.inv;
         if (t < 0) t = 0; else if (t > 1) t = 1;
         const px = g.x1 + g.dx * t, py = g.y1 + g.dy * t;
@@ -271,6 +282,7 @@ function collideSegs() {
       if (x > W - R) x = W - R;
       if (y > H - R) y = H - R;
       if (y < R) y = R;
+      if (y < oy && oy < CUP.t + 36) y = oy;
       xs[i] = x; ys[i] = y;
       pxs[i] += (x - ox) * 0.9;
       pys[i] += (y - oy) * 0.9;
@@ -299,6 +311,13 @@ function integrate() {
     const damp = inPile ? 0.8 : 0.998;
     let vx = (xs[i] - pxs[i]) * damp;
     let vy = (ys[i] - pys[i]) * damp + G;
+    if (ys[i] < CUP.t) {
+      vy += G * 0.65;
+      vx *= 0.998;
+      if (vy < 0) vy = 0;
+    } else if (inCup(xs[i], ys[i]) && ys[i] < surface - 16) {
+      vx *= 0.9;
+    }
     const sp = Math.hypot(vx, vy);
     const cap = inPile ? 1.1 : VMAX_FLY;
     if (sp > cap) {
@@ -530,7 +549,7 @@ function update() {
       waitFrames++;
       if (flying() === 0) calmFrames++;
       else calmFrames = 0;
-      if (calmFrames > 8 || waitFrames > 240) markSettled();
+      if (calmFrames > 8) markSettled();
     }
   }
   hud();
