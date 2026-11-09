@@ -12,8 +12,11 @@ body{
 }
 h1{color:#7eb6ff;letter-spacing:4px;font-size:1.38em}
 #sub{color:#7a8494;font-size:.82em;margin:2px 0 8px}
-#info{display:flex;flex-wrap:wrap;gap:10px 18px;justify-content:center;font-size:.88em;margin-bottom:8px}
-#info strong{color:#7eb6ff}
+#views{display:flex;flex-wrap:wrap;gap:18px;justify-content:center;width:100%}
+.view{display:flex;flex-direction:column;align-items:center}
+.view h2{color:#9eb6d4;font-size:.95em;letter-spacing:1px;margin-bottom:4px}
+.info{display:flex;flex-wrap:wrap;gap:8px 14px;justify-content:center;font-size:.82em;margin-bottom:6px}
+.info strong{color:#7eb6ff}
 canvas{
   border:2px solid #3a4250;border-radius:6px;display:block;max-width:100%;
   box-shadow:0 0 36px rgba(0,0,0,.45);background:#07090d;cursor:crosshair;
@@ -30,63 +33,40 @@ button:hover{background:#323a46}
 </head>
 <body>
 <h1>FLUID SIM</h1>
-<p id="sub">2D SPH from Fluid-Sim · Test A</p>
-<div id="info">
-  <span>Particles <strong id="n">0</strong></span>
-  <span>State <strong id="st">running</strong></span>
-  <span>Step <strong id="fps">0</strong> ms</span>
-</div>
-<canvas id="cv"></canvas>
+<p id="sub">2D SPH from Fluid-Sim · one instance per view</p>
+<div id="views"></div>
 <p id="hint">
-  Same density, pressure, near-pressure, and viscosity kernels as the Unity 2D sim.
-  <b>Left drag</b> pulls. <b>Right drag</b> pushes.
-  <b>Space</b> pauses. <b>Right arrow</b> steps one frame. <b>R</b> resets.
+  Each view is its own <b>FluidSim</b>. <b>Left drag</b> pulls, <b>right drag</b> pushes.
+  <b>Space</b> pauses the view under the pointer. <b>Right arrow</b> steps it. <b>R</b> resets it.
 </p>
-<div class="btns">
-  <button id="bPause" onclick="togglePause()">Pause</button>
-  <button onclick="resetSim()">Reset</button>
-</div>
 
 <script>
 'use strict';
-const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d', { alpha: false });
-const W = 1000, H = 560;
-cv.width = W; cv.height = H;
 
-const GRAVITY = -12;
-const DAMPING = 0.95;
-const H_SMOOTH = 0.35;
-const TARGET_DENSITY = 55;
-const PRESSURE_MUL = 500;
-const NEAR_PRESSURE_MUL = 5;
-const VISCOSITY = 0.03;
-const BOUNDS = { x: 17.1, y: 9.3 };
-const OBSTACLE = { x: 0, y: 0 };
-const OBSTACLE_C = { x: 0, y: 0 };
-const INTERACT_R = 2;
-const INTERACT_S = 90;
-const ITERS = 3;
-const MAX_DT = 1 / 60;
-const PREDICT = 1 / 120;
-const VEL_MAX = 6.5;
-const PARTICLE_SCALE = 0.08;
-
-const SPAWN = { x: 0, y: 0.66, w: 6.42, h: 4.39, density: 159, jitter: 0.03 };
-
-const PI = Math.PI;
-const H2 = H_SMOOTH * H_SMOOTH;
-const POLY6 = 4 / (PI * Math.pow(H_SMOOTH, 8));
-const SPIKY3 = 10 / (PI * Math.pow(H_SMOOTH, 5));
-const SPIKY2 = 6 / (PI * Math.pow(H_SMOOTH, 4));
-const DSPIKY3 = 30 / (Math.pow(H_SMOOTH, 5) * PI);
-const DSPIKY2 = 12 / (Math.pow(H_SMOOTH, 4) * PI);
-const SELF_D = H2 * SPIKY2;
-const SELF_N = H_SMOOTH * H2 * SPIKY3;
-
-const OX = 48, OY = 36, GW = 96, GH = 72;
-const HALF_X = BOUNDS.x * 0.5, HALF_Y = BOUNDS.y * 0.5;
-const OBS_HX = OBSTACLE.x * 0.5, OBS_HY = OBSTACLE.y * 0.5;
+const DEFAULTS = {
+  width: 620,
+  height: 360,
+  gravity: -12,
+  damping: 0.95,
+  smoothing: 0.35,
+  targetDensity: 55,
+  pressure: 500,
+  nearPressure: 5,
+  viscosity: 0.03,
+  bounds: { x: 17.1, y: 9.3 },
+  obstacle: { x: 0, y: 0 },
+  obstacleCentre: { x: 0, y: 0 },
+  interactRadius: 2,
+  interactStrength: 90,
+  iterations: 3,
+  maxDt: 1 / 60,
+  predict: 1 / 120,
+  velMax: 6.5,
+  particleScale: 0.08,
+  spawn: { x: 0, y: 0.66, w: 6.42, h: 4.39, density: 159, jitter: 0.03 },
+  seed: 42,
+  title: 'Fluid'
+};
 
 function spawnCount(w, h, density) {
   const target = Math.ceil(w * h * density);
@@ -95,22 +75,6 @@ function spawnCount(w, h, density) {
   const m = Math.sqrt(target / (tx * ty));
   return { nx: Math.ceil(tx * m), ny: Math.ceil(ty * m) };
 }
-
-const gridN = spawnCount(SPAWN.w, SPAWN.h, SPAWN.density);
-const N = gridN.nx * gridN.ny;
-
-const px = new Float32Array(N);
-const py = new Float32Array(N);
-const vx = new Float32Array(N);
-const vy = new Float32Array(N);
-const predX = new Float32Array(N);
-const predY = new Float32Array(N);
-const dens = new Float32Array(N);
-const near = new Float32Array(N);
-const homeX = new Float32Array(N);
-const homeY = new Float32Array(N);
-const next = new Int32Array(N);
-const heads = new Int32Array(GW * GH);
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -121,232 +85,6 @@ function mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-function placeSpawn() {
-  const rand = mulberry32(42);
-  let i = 0;
-  for (let y = 0; y < gridN.ny; y++) {
-    for (let x = 0; x < gridN.nx; x++) {
-      const tx = gridN.nx === 1 ? 0.5 : x / (gridN.nx - 1);
-      const ty = gridN.ny === 1 ? 0.5 : y / (gridN.ny - 1);
-      const angle = rand() * PI * 2;
-      const mag = SPAWN.jitter * (rand() - 0.5);
-      homeX[i] = (tx - 0.5) * SPAWN.w + SPAWN.x + Math.cos(angle) * mag;
-      homeY[i] = (ty - 0.5) * SPAWN.h + SPAWN.y + Math.sin(angle) * mag;
-      i++;
-    }
-  }
-}
-
-function resetSim() {
-  for (let i = 0; i < N; i++) {
-    px[i] = homeX[i];
-    py[i] = homeY[i];
-    vx[i] = 0;
-    vy[i] = 0;
-    predX[i] = px[i];
-    predY[i] = py[i];
-    dens[i] = SELF_D;
-    near[i] = SELF_N;
-  }
-  paused = false;
-  document.getElementById('bPause').textContent = 'Pause';
-  document.getElementById('st').textContent = 'running';
-}
-
-function cellIndex(x, y) {
-  const ix = Math.floor(x / H_SMOOTH);
-  const iy = Math.floor(y / H_SMOOTH);
-  const gx = ix + OX, gy = iy + OY;
-  if (gx < 0 || gy < 0 || gx >= GW || gy >= GH) return -1;
-  return gx + gy * GW;
-}
-
-function buildGrid() {
-  heads.fill(-1);
-  for (let i = 0; i < N; i++) {
-    const c = cellIndex(predX[i], predY[i]);
-    if (c < 0) { next[i] = -1; continue; }
-    next[i] = heads[c];
-    heads[c] = i;
-  }
-}
-
-function forNeighbors(i, fn) {
-  const c = cellIndex(predX[i], predY[i]);
-  if (c < 0) return;
-  const gx = c % GW, gy = (c / GW) | 0;
-  for (let oy = -1; oy <= 1; oy++) {
-    const yy = gy + oy;
-    if (yy < 0 || yy >= GH) continue;
-    for (let ox = -1; ox <= 1; ox++) {
-      const xx = gx + ox;
-      if (xx < 0 || xx >= GW) continue;
-      let j = heads[xx + yy * GW];
-      while (j !== -1) {
-        fn(j);
-        j = next[j];
-      }
-    }
-  }
-}
-
-function kernel2(dst) {
-  if (dst >= H_SMOOTH) return 0;
-  const v = H_SMOOTH - dst;
-  return v * v * SPIKY2;
-}
-function kernel3(dst) {
-  if (dst >= H_SMOOTH) return 0;
-  const v = H_SMOOTH - dst;
-  return v * v * v * SPIKY3;
-}
-function deriv2(dst) {
-  if (dst > H_SMOOTH) return 0;
-  return -(H_SMOOTH - dst) * DSPIKY2;
-}
-function deriv3(dst) {
-  if (dst > H_SMOOTH) return 0;
-  const v = H_SMOOTH - dst;
-  return -v * v * DSPIKY3;
-}
-function poly6(dst) {
-  if (dst >= H_SMOOTH) return 0;
-  const v = H2 - dst * dst;
-  return v * v * v * POLY6;
-}
-
-function external(i) {
-  let ax = 0, ay = GRAVITY;
-  const strength = mouse.push ? -INTERACT_S : (mouse.pull ? INTERACT_S : 0);
-  if (strength !== 0) {
-    const ox = mouse.x - px[i];
-    const oy = mouse.y - py[i];
-    const sqr = ox * ox + oy * oy;
-    const r2 = INTERACT_R * INTERACT_R;
-    if (sqr < r2 && sqr > 1e-8) {
-      const dst = Math.sqrt(sqr);
-      const centreT = 1 - dst / INTERACT_R;
-      const gravityWeight = 1 - centreT * Math.min(1, Math.max(0, strength / 10));
-      ax = (ox / dst) * centreT * strength - vx[i] * centreT;
-      ay = GRAVITY * gravityWeight + (oy / dst) * centreT * strength - vy[i] * centreT;
-    }
-  }
-  vx[i] += ax * dt;
-  vy[i] += ay * dt;
-}
-
-function densityPass() {
-  for (let i = 0; i < N; i++) {
-    let d = 0, n = 0;
-    const x = predX[i], y = predY[i];
-    forNeighbors(i, j => {
-      const dx = predX[j] - x, dy = predY[j] - y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > H2) return;
-      const dst = Math.sqrt(d2);
-      d += kernel2(dst);
-      n += kernel3(dst);
-    });
-    dens[i] = d > 0 ? d : SELF_D;
-    near[i] = n > 0 ? n : SELF_N;
-  }
-}
-
-function pressurePass() {
-  for (let i = 0; i < N; i++) {
-    const pressure = (dens[i] - TARGET_DENSITY) * PRESSURE_MUL;
-    const nearP = NEAR_PRESSURE_MUL * near[i];
-    let fx = 0, fy = 0;
-    const x = predX[i], y = predY[i];
-    forNeighbors(i, j => {
-      if (j === i) return;
-      const dx = predX[j] - x, dy = predY[j] - y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > H2) return;
-      const dst = Math.sqrt(d2);
-      const inv = dst > 0 ? 1 / dst : 0;
-      const dirx = dst > 0 ? dx * inv : 0;
-      const diry = dst > 0 ? dy * inv : 1;
-      const nd = dens[j] > 1e-4 ? dens[j] : 1e-4;
-      const nn = near[j] > 1e-4 ? near[j] : 1e-4;
-      const shared = (pressure + (nd - TARGET_DENSITY) * PRESSURE_MUL) * 0.5;
-      const sharedNear = (nearP + NEAR_PRESSURE_MUL * nn) * 0.5;
-      const s = deriv2(dst) * shared / nd + deriv3(dst) * sharedNear / nn;
-      fx += dirx * s;
-      fy += diry * s;
-    });
-    const invD = dens[i] > 1e-4 ? 1 / dens[i] : 0;
-    vx[i] += fx * invD * dt;
-    vy[i] += fy * invD * dt;
-  }
-}
-
-function viscosityPass() {
-  for (let i = 0; i < N; i++) {
-    let fx = 0, fy = 0;
-    const x = predX[i], y = predY[i];
-    const vxi = vx[i], vyi = vy[i];
-    forNeighbors(i, j => {
-      if (j === i) return;
-      const dx = predX[j] - x, dy = predY[j] - y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > H2) return;
-      const w = poly6(Math.sqrt(d2));
-      fx += (vx[j] - vxi) * w;
-      fy += (vy[j] - vyi) * w;
-    });
-    vx[i] += fx * VISCOSITY * dt;
-    vy[i] += fy * VISCOSITY * dt;
-  }
-}
-
-function collide(i) {
-  const ax = Math.abs(px[i]), ay = Math.abs(py[i]);
-  if (HALF_X - ax <= 0) {
-    px[i] = HALF_X * Math.sign(px[i]);
-    vx[i] *= -DAMPING;
-  }
-  if (HALF_Y - ay <= 0) {
-    py[i] = HALF_Y * Math.sign(py[i]);
-    vy[i] *= -DAMPING;
-  }
-  if (OBS_HX > 0 && OBS_HY > 0) {
-    const dx = px[i] - OBSTACLE_C.x, dy = py[i] - OBSTACLE_C.y;
-    const ex = OBS_HX - Math.abs(dx), ey = OBS_HY - Math.abs(dy);
-    if (ex >= 0 && ey >= 0) {
-      if (ex < ey) {
-        px[i] = OBS_HX * Math.sign(dx) + OBSTACLE_C.x;
-        vx[i] *= -DAMPING;
-      } else {
-        py[i] = OBS_HY * Math.sign(dy) + OBSTACLE_C.y;
-        vy[i] *= -DAMPING;
-      }
-    }
-  }
-}
-
-let dt = MAX_DT / ITERS;
-
-function substep() {
-  for (let i = 0; i < N; i++) {
-    external(i);
-    predX[i] = px[i] + vx[i] * PREDICT;
-    predY[i] = py[i] + vy[i] * PREDICT;
-  }
-  buildGrid();
-  densityPass();
-  pressurePass();
-  viscosityPass();
-  for (let i = 0; i < N; i++) {
-    px[i] += vx[i] * dt;
-    py[i] += vy[i] * dt;
-    collide(i);
-  }
-}
-
-const SCALE = Math.min(W / (BOUNDS.x * 1.08), H / (BOUNDS.y * 1.12));
-const GRAD = buildGradient();
 
 function buildGradient() {
   const keys = [
@@ -364,126 +102,478 @@ function buildGradient() {
       if (t >= keys[k][0] && t <= keys[k + 1][0]) { a = keys[k]; b = keys[k + 1]; break; }
     }
     const u = a === b ? 0 : (t - a[0]) / (b[0] - a[0]);
-    const r = a[1] + (b[1] - a[1]) * u;
-    const g = a[2] + (b[2] - a[2]) * u;
-    const bl = a[3] + (b[3] - a[3]) * u;
-    cols.push('rgb(' + (r | 0) + ',' + (g | 0) + ',' + (bl | 0) + ')');
+    cols.push('rgb(' + ((a[1] + (b[1] - a[1]) * u) | 0) + ',' + ((a[2] + (b[2] - a[2]) * u) | 0) + ',' + ((a[3] + (b[3] - a[3]) * u) | 0) + ')');
   }
   return cols;
 }
 
-function worldToScreen(x, y) {
-  return [W * 0.5 + x * SCALE, H * 0.5 - y * SCALE];
-}
+const GRAD = buildGradient();
 
-function screenToWorld(sx, sy) {
-  return { x: (sx - W * 0.5) / SCALE, y: (H * 0.5 - sy) / SCALE };
-}
+class FluidSim {
+  constructor(canvas, options) {
+    const o = Object.assign({}, DEFAULTS, options || {});
+    this.canvas = canvas;
+    this.g = canvas.getContext('2d', { alpha: false });
+    this.viewW = o.width;
+    this.viewH = o.height;
+    canvas.width = this.viewW;
+    canvas.height = this.viewH;
 
-function draw() {
-  ctx.fillStyle = '#07090d';
-  ctx.fillRect(0, 0, W, H);
-  const x0 = worldToScreen(-HALF_X, HALF_Y);
-  const x1 = worldToScreen(HALF_X, -HALF_Y);
-  ctx.strokeStyle = '#3d4a5c';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x0[0], x0[1], x1[0] - x0[0], x1[1] - x0[1]);
+    this.gravity = o.gravity;
+    this.damping = o.damping;
+    this.h = o.smoothing;
+    this.h2 = this.h * this.h;
+    this.targetDensity = o.targetDensity;
+    this.pressureMul = o.pressure;
+    this.nearPressureMul = o.nearPressure;
+    this.viscosity = o.viscosity;
+    this.bounds = o.bounds;
+    this.obstacle = o.obstacle;
+    this.obstacleCentre = o.obstacleCentre;
+    this.interactRadius = o.interactRadius;
+    this.interactStrength = o.interactStrength;
+    this.iterations = o.iterations;
+    this.maxDt = o.maxDt;
+    this.predict = o.predict;
+    this.velMax = o.velMax;
+    this.particleScale = o.particleScale;
+    this.spawn = o.spawn;
+    this.seed = o.seed;
+    this.title = o.title;
 
-  const rad = PARTICLE_SCALE * 0.5 * SCALE;
-  const buckets = GRAD.map(() => []);
-  for (let i = 0; i < N; i++) {
-    const s = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]) / VEL_MAX;
-    let b = (s * 31) | 0;
-    if (b < 0) b = 0;
-    if (b > 31) b = 31;
-    const p = worldToScreen(px[i], py[i]);
-    buckets[b].push(p[0], p[1]);
+    const pi = Math.PI;
+    this.poly6 = 4 / (pi * Math.pow(this.h, 8));
+    this.spiky3 = 10 / (pi * Math.pow(this.h, 5));
+    this.spiky2 = 6 / (pi * Math.pow(this.h, 4));
+    this.dSpiky3 = 30 / (Math.pow(this.h, 5) * pi);
+    this.dSpiky2 = 12 / (Math.pow(this.h, 4) * pi);
+    this.selfD = this.h2 * this.spiky2;
+    this.selfN = this.h * this.h2 * this.spiky3;
+
+    this.ox = 48;
+    this.oy = 36;
+    this.gw = 96;
+    this.gh = 72;
+    this.halfX = this.bounds.x * 0.5;
+    this.halfY = this.bounds.y * 0.5;
+    this.obsHx = this.obstacle.x * 0.5;
+    this.obsHy = this.obstacle.y * 0.5;
+    this.scale = Math.min(this.viewW / (this.bounds.x * 1.08), this.viewH / (this.bounds.y * 1.12));
+
+    const grid = spawnCount(this.spawn.w, this.spawn.h, this.spawn.density);
+    this.gridN = grid;
+    this.n = grid.nx * grid.ny;
+    this.px = new Float32Array(this.n);
+    this.py = new Float32Array(this.n);
+    this.vx = new Float32Array(this.n);
+    this.vy = new Float32Array(this.n);
+    this.predX = new Float32Array(this.n);
+    this.predY = new Float32Array(this.n);
+    this.dens = new Float32Array(this.n);
+    this.near = new Float32Array(this.n);
+    this.homeX = new Float32Array(this.n);
+    this.homeY = new Float32Array(this.n);
+    this.next = new Int32Array(this.n);
+    this.heads = new Int32Array(this.gw * this.gh);
+
+    this.dt = this.maxDt / this.iterations;
+    this.paused = false;
+    this.stepOnce = false;
+    this.mouse = { x: 0, y: 2, pull: false, push: false };
+    this.last = performance.now();
+    this.stepMs = 0;
+    this.hud = null;
+
+    this.placeSpawn();
+    this.reset();
+    this.bindPointer();
   }
-  for (let b = 0; b < buckets.length; b++) {
-    const pts = buckets[b];
-    if (!pts.length) continue;
-    ctx.fillStyle = GRAD[b];
-    ctx.beginPath();
-    for (let k = 0; k < pts.length; k += 2) {
-      ctx.moveTo(pts[k] + rad, pts[k + 1]);
-      ctx.arc(pts[k], pts[k + 1], rad, 0, 6.283185307179586);
+
+  placeSpawn() {
+    const rand = mulberry32(this.seed);
+    const g = this.gridN;
+    const s = this.spawn;
+    let i = 0;
+    for (let y = 0; y < g.ny; y++) {
+      for (let x = 0; x < g.nx; x++) {
+        const tx = g.nx === 1 ? 0.5 : x / (g.nx - 1);
+        const ty = g.ny === 1 ? 0.5 : y / (g.ny - 1);
+        const angle = rand() * Math.PI * 2;
+        const mag = s.jitter * (rand() - 0.5);
+        this.homeX[i] = (tx - 0.5) * s.w + s.x + Math.cos(angle) * mag;
+        this.homeY[i] = (ty - 0.5) * s.h + s.y + Math.sin(angle) * mag;
+        i++;
+      }
     }
-    ctx.fill();
   }
 
-  if (mouse.pull || mouse.push) {
-    const p = worldToScreen(mouse.x, mouse.y);
-    ctx.beginPath();
-    ctx.arc(p[0], p[1], INTERACT_R * SCALE, 0, 6.283185307179586);
-    ctx.strokeStyle = mouse.push ? 'rgba(255,90,70,0.8)' : 'rgba(90,220,140,0.8)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+  reset() {
+    for (let i = 0; i < this.n; i++) {
+      this.px[i] = this.homeX[i];
+      this.py[i] = this.homeY[i];
+      this.vx[i] = 0;
+      this.vy[i] = 0;
+      this.predX[i] = this.px[i];
+      this.predY[i] = this.py[i];
+      this.dens[i] = this.selfD;
+      this.near[i] = this.selfN;
+    }
+    this.paused = false;
+    this.stepOnce = false;
+    this.syncHud();
   }
-}
 
-let paused = false;
-let stepOnce = false;
-let mouse = { x: 0, y: 2, pull: false, push: false };
-let last = performance.now();
+  togglePause() {
+    this.paused = !this.paused;
+    this.syncHud();
+  }
 
-function togglePause() {
-  paused = !paused;
-  document.getElementById('bPause').textContent = paused ? 'Play' : 'Pause';
-  document.getElementById('st').textContent = paused ? 'paused' : 'running';
-}
+  cellIndex(x, y) {
+    const ix = Math.floor(x / this.h);
+    const iy = Math.floor(y / this.h);
+    const gx = ix + this.ox, gy = iy + this.oy;
+    if (gx < 0 || gy < 0 || gx >= this.gw || gy >= this.gh) return -1;
+    return gx + gy * this.gw;
+  }
 
-function frame(now) {
-  const elapsed = Math.min((now - last) / 1000, MAX_DT);
-  last = now;
-  if (!paused || stepOnce) {
-    dt = (stepOnce ? MAX_DT : elapsed) / ITERS;
-    const t0 = performance.now();
-    for (let s = 0; s < ITERS; s++) substep();
-    document.getElementById('fps').textContent = (performance.now() - t0).toFixed(1);
-    if (stepOnce) {
-      paused = true;
-      stepOnce = false;
-      document.getElementById('bPause').textContent = 'Play';
-      document.getElementById('st').textContent = 'paused';
+  buildGrid() {
+    this.heads.fill(-1);
+    for (let i = 0; i < this.n; i++) {
+      const c = this.cellIndex(this.predX[i], this.predY[i]);
+      if (c < 0) { this.next[i] = -1; continue; }
+      this.next[i] = this.heads[c];
+      this.heads[c] = i;
     }
   }
-  document.getElementById('n').textContent = N;
-  draw();
-  requestAnimationFrame(frame);
+
+  forNeighbors(i, fn) {
+    const c = this.cellIndex(this.predX[i], this.predY[i]);
+    if (c < 0) return;
+    const gx = c % this.gw, gy = (c / this.gw) | 0;
+    for (let oy = -1; oy <= 1; oy++) {
+      const yy = gy + oy;
+      if (yy < 0 || yy >= this.gh) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        const xx = gx + ox;
+        if (xx < 0 || xx >= this.gw) continue;
+        let j = this.heads[xx + yy * this.gw];
+        while (j !== -1) {
+          fn(j);
+          j = this.next[j];
+        }
+      }
+    }
+  }
+
+  kernel2(dst) {
+    if (dst >= this.h) return 0;
+    const v = this.h - dst;
+    return v * v * this.spiky2;
+  }
+  kernel3(dst) {
+    if (dst >= this.h) return 0;
+    const v = this.h - dst;
+    return v * v * v * this.spiky3;
+  }
+  deriv2(dst) {
+    if (dst > this.h) return 0;
+    return -(this.h - dst) * this.dSpiky2;
+  }
+  deriv3(dst) {
+    if (dst > this.h) return 0;
+    const v = this.h - dst;
+    return -v * v * this.dSpiky3;
+  }
+  kernelPoly6(dst) {
+    if (dst >= this.h) return 0;
+    const v = this.h2 - dst * dst;
+    return v * v * v * this.poly6;
+  }
+
+  external(i) {
+    let ax = 0, ay = this.gravity;
+    const strength = this.mouse.push ? -this.interactStrength : (this.mouse.pull ? this.interactStrength : 0);
+    if (strength !== 0) {
+      const ox = this.mouse.x - this.px[i];
+      const oy = this.mouse.y - this.py[i];
+      const sqr = ox * ox + oy * oy;
+      const r2 = this.interactRadius * this.interactRadius;
+      if (sqr < r2 && sqr > 1e-8) {
+        const dst = Math.sqrt(sqr);
+        const centreT = 1 - dst / this.interactRadius;
+        const gravityWeight = 1 - centreT * Math.min(1, Math.max(0, strength / 10));
+        ax = (ox / dst) * centreT * strength - this.vx[i] * centreT;
+        ay = this.gravity * gravityWeight + (oy / dst) * centreT * strength - this.vy[i] * centreT;
+      }
+    }
+    this.vx[i] += ax * this.dt;
+    this.vy[i] += ay * this.dt;
+  }
+
+  densityPass() {
+    for (let i = 0; i < this.n; i++) {
+      let d = 0, n = 0;
+      const x = this.predX[i], y = this.predY[i];
+      this.forNeighbors(i, j => {
+        const dx = this.predX[j] - x, dy = this.predY[j] - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > this.h2) return;
+        const dst = Math.sqrt(d2);
+        d += this.kernel2(dst);
+        n += this.kernel3(dst);
+      });
+      this.dens[i] = d > 0 ? d : this.selfD;
+      this.near[i] = n > 0 ? n : this.selfN;
+    }
+  }
+
+  pressurePass() {
+    for (let i = 0; i < this.n; i++) {
+      const pressure = (this.dens[i] - this.targetDensity) * this.pressureMul;
+      const nearP = this.nearPressureMul * this.near[i];
+      let fx = 0, fy = 0;
+      const x = this.predX[i], y = this.predY[i];
+      this.forNeighbors(i, j => {
+        if (j === i) return;
+        const dx = this.predX[j] - x, dy = this.predY[j] - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > this.h2) return;
+        const dst = Math.sqrt(d2);
+        const dirx = dst > 0 ? dx / dst : 0;
+        const diry = dst > 0 ? dy / dst : 1;
+        const nd = this.dens[j] > 1e-4 ? this.dens[j] : 1e-4;
+        const nn = this.near[j] > 1e-4 ? this.near[j] : 1e-4;
+        const shared = (pressure + (nd - this.targetDensity) * this.pressureMul) * 0.5;
+        const sharedNear = (nearP + this.nearPressureMul * nn) * 0.5;
+        const s = this.deriv2(dst) * shared / nd + this.deriv3(dst) * sharedNear / nn;
+        fx += dirx * s;
+        fy += diry * s;
+      });
+      const invD = this.dens[i] > 1e-4 ? 1 / this.dens[i] : 0;
+      this.vx[i] += fx * invD * this.dt;
+      this.vy[i] += fy * invD * this.dt;
+    }
+  }
+
+  viscosityPass() {
+    for (let i = 0; i < this.n; i++) {
+      let fx = 0, fy = 0;
+      const x = this.predX[i], y = this.predY[i];
+      const vxi = this.vx[i], vyi = this.vy[i];
+      this.forNeighbors(i, j => {
+        if (j === i) return;
+        const dx = this.predX[j] - x, dy = this.predY[j] - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > this.h2) return;
+        const w = this.kernelPoly6(Math.sqrt(d2));
+        fx += (this.vx[j] - vxi) * w;
+        fy += (this.vy[j] - vyi) * w;
+      });
+      this.vx[i] += fx * this.viscosity * this.dt;
+      this.vy[i] += fy * this.viscosity * this.dt;
+    }
+  }
+
+  collide(i) {
+    const ax = Math.abs(this.px[i]), ay = Math.abs(this.py[i]);
+    if (this.halfX - ax <= 0) {
+      this.px[i] = this.halfX * Math.sign(this.px[i]);
+      this.vx[i] *= -this.damping;
+    }
+    if (this.halfY - ay <= 0) {
+      this.py[i] = this.halfY * Math.sign(this.py[i]);
+      this.vy[i] *= -this.damping;
+    }
+    if (this.obsHx > 0 && this.obsHy > 0) {
+      const dx = this.px[i] - this.obstacleCentre.x, dy = this.py[i] - this.obstacleCentre.y;
+      const ex = this.obsHx - Math.abs(dx), ey = this.obsHy - Math.abs(dy);
+      if (ex >= 0 && ey >= 0) {
+        if (ex < ey) {
+          this.px[i] = this.obsHx * Math.sign(dx) + this.obstacleCentre.x;
+          this.vx[i] *= -this.damping;
+        } else {
+          this.py[i] = this.obsHy * Math.sign(dy) + this.obstacleCentre.y;
+          this.vy[i] *= -this.damping;
+        }
+      }
+    }
+  }
+
+  substep() {
+    for (let i = 0; i < this.n; i++) {
+      this.external(i);
+      this.predX[i] = this.px[i] + this.vx[i] * this.predict;
+      this.predY[i] = this.py[i] + this.vy[i] * this.predict;
+    }
+    this.buildGrid();
+    this.densityPass();
+    this.pressurePass();
+    this.viscosityPass();
+    for (let i = 0; i < this.n; i++) {
+      this.px[i] += this.vx[i] * this.dt;
+      this.py[i] += this.vy[i] * this.dt;
+      this.collide(i);
+    }
+  }
+
+  step(frameDt) {
+    this.dt = frameDt / this.iterations;
+    for (let s = 0; s < this.iterations; s++) this.substep();
+  }
+
+  worldToScreen(x, y) {
+    return [this.viewW * 0.5 + x * this.scale, this.viewH * 0.5 - y * this.scale];
+  }
+
+  screenToWorld(sx, sy) {
+    return { x: (sx - this.viewW * 0.5) / this.scale, y: (this.viewH * 0.5 - sy) / this.scale };
+  }
+
+  draw() {
+    const g = this.g;
+    g.fillStyle = '#07090d';
+    g.fillRect(0, 0, this.viewW, this.viewH);
+    const x0 = this.worldToScreen(-this.halfX, this.halfY);
+    const x1 = this.worldToScreen(this.halfX, -this.halfY);
+    g.strokeStyle = '#3d4a5c';
+    g.lineWidth = 2;
+    g.strokeRect(x0[0], x0[1], x1[0] - x0[0], x1[1] - x0[1]);
+
+    const rad = this.particleScale * 0.5 * this.scale;
+    const buckets = GRAD.map(() => []);
+    for (let i = 0; i < this.n; i++) {
+      const s = Math.sqrt(this.vx[i] * this.vx[i] + this.vy[i] * this.vy[i]) / this.velMax;
+      let b = (s * 31) | 0;
+      if (b < 0) b = 0;
+      if (b > 31) b = 31;
+      const p = this.worldToScreen(this.px[i], this.py[i]);
+      buckets[b].push(p[0], p[1]);
+    }
+    for (let b = 0; b < buckets.length; b++) {
+      const pts = buckets[b];
+      if (!pts.length) continue;
+      g.fillStyle = GRAD[b];
+      g.beginPath();
+      for (let k = 0; k < pts.length; k += 2) {
+        g.moveTo(pts[k] + rad, pts[k + 1]);
+        g.arc(pts[k], pts[k + 1], rad, 0, 6.283185307179586);
+      }
+      g.fill();
+    }
+
+    if (this.mouse.pull || this.mouse.push) {
+      const p = this.worldToScreen(this.mouse.x, this.mouse.y);
+      g.beginPath();
+      g.arc(p[0], p[1], this.interactRadius * this.scale, 0, 6.283185307179586);
+      g.strokeStyle = this.mouse.push ? 'rgba(255,90,70,0.8)' : 'rgba(90,220,140,0.8)';
+      g.lineWidth = 1.5;
+      g.stroke();
+    }
+  }
+
+  canvasPos(e) {
+    const r = this.canvas.getBoundingClientRect();
+    return this.screenToWorld((e.clientX - r.left) * (this.viewW / r.width), (e.clientY - r.top) * (this.viewH / r.height));
+  }
+
+  bindPointer() {
+    const cv = this.canvas;
+    cv.addEventListener('pointerdown', e => {
+      const p = this.canvasPos(e);
+      this.mouse.x = p.x; this.mouse.y = p.y;
+      if (e.button === 0) this.mouse.pull = true;
+      if (e.button === 2) this.mouse.push = true;
+      cv.setPointerCapture(e.pointerId);
+      hoverSim = this;
+    });
+    cv.addEventListener('pointermove', e => {
+      const p = this.canvasPos(e);
+      this.mouse.x = p.x; this.mouse.y = p.y;
+    });
+    cv.addEventListener('pointerup', e => {
+      if (e.button === 0) this.mouse.pull = false;
+      if (e.button === 2) this.mouse.push = false;
+    });
+    cv.addEventListener('pointerenter', () => { hoverSim = this; });
+    cv.addEventListener('pointerleave', () => { this.mouse.pull = false; this.mouse.push = false; });
+    cv.addEventListener('contextmenu', e => e.preventDefault());
+  }
+
+  syncHud() {
+    if (!this.hud) return;
+    this.hud.n.textContent = this.n;
+    this.hud.st.textContent = this.paused ? 'paused' : 'running';
+    this.hud.ms.textContent = this.stepMs.toFixed(1);
+    this.hud.pause.textContent = this.paused ? 'Play' : 'Pause';
+  }
+
+  frame(now) {
+    const elapsed = Math.min((now - this.last) / 1000, this.maxDt);
+    this.last = now;
+    if (!this.paused || this.stepOnce) {
+      const t0 = performance.now();
+      this.step(this.stepOnce ? this.maxDt : elapsed);
+      this.stepMs = performance.now() - t0;
+      if (this.stepOnce) {
+        this.paused = true;
+        this.stepOnce = false;
+      }
+    }
+    this.syncHud();
+    this.draw();
+  }
 }
 
-function canvasPos(e) {
-  const r = cv.getBoundingClientRect();
-  return screenToWorld((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+function mountFluid(parent, options) {
+  const view = document.createElement('section');
+  view.className = 'view';
+  const title = document.createElement('h2');
+  title.textContent = (options && options.title) || 'Fluid';
+  const info = document.createElement('div');
+  info.className = 'info';
+  info.innerHTML = 'Particles <strong></strong> <span>State <strong></strong></span> <span>Step <strong></strong> ms</span>';
+  const canvas = document.createElement('canvas');
+  const btns = document.createElement('div');
+  btns.className = 'btns';
+  const pause = document.createElement('button');
+  pause.textContent = 'Pause';
+  const reset = document.createElement('button');
+  reset.textContent = 'Reset';
+  btns.append(pause, reset);
+  view.append(title, info, canvas, btns);
+  parent.appendChild(view);
+
+  const sim = new FluidSim(canvas, options);
+  const strong = info.querySelectorAll('strong');
+  sim.hud = { n: strong[0], st: strong[1], ms: strong[2], pause };
+  pause.addEventListener('click', () => sim.togglePause());
+  reset.addEventListener('click', () => sim.reset());
+  sim.syncHud();
+  return sim;
 }
 
-cv.addEventListener('pointerdown', e => {
-  const p = canvasPos(e);
-  mouse.x = p.x; mouse.y = p.y;
-  if (e.button === 0) mouse.pull = true;
-  if (e.button === 2) mouse.push = true;
-  cv.setPointerCapture(e.pointerId);
-});
-cv.addEventListener('pointermove', e => {
-  const p = canvasPos(e);
-  mouse.x = p.x; mouse.y = p.y;
-});
-cv.addEventListener('pointerup', e => {
-  if (e.button === 0) mouse.pull = false;
-  if (e.button === 2) mouse.push = false;
-});
-cv.addEventListener('pointerleave', () => { mouse.pull = false; mouse.push = false; });
-cv.addEventListener('contextmenu', e => e.preventDefault());
+const views = document.getElementById('views');
+const sims = [
+  mountFluid(views, { title: 'Instance A' }),
+  mountFluid(views, { title: 'Instance B' })
+];
+let hoverSim = sims[0];
+
+window.FluidSim = FluidSim;
+window.sims = sims;
 
 window.addEventListener('keydown', e => {
-  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
-  else if (e.code === 'KeyR') resetSim();
-  else if (e.code === 'ArrowRight') { stepOnce = true; paused = false; }
+  const sim = hoverSim;
+  if (!sim) return;
+  if (e.code === 'Space') { e.preventDefault(); sim.togglePause(); }
+  else if (e.code === 'KeyR') sim.reset();
+  else if (e.code === 'ArrowRight') { sim.stepOnce = true; sim.paused = false; }
 });
 
-placeSpawn();
-resetSim();
-document.getElementById('n').textContent = N;
+function frame(now) {
+  for (let i = 0; i < sims.length; i++) sims[i].frame(now);
+  requestAnimationFrame(frame);
+}
 requestAnimationFrame(frame);
 </script>
 </body>
