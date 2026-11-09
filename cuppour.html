@@ -117,7 +117,6 @@ const heads = new Int32Array(HCELLS * VCELLS);
 const next = new Int32Array(N);
 
 const LIQUID = [224, 168, 52];
-const LIQUID_EDGE = [138, 92, 24];
 
 let alive, spawnI, painted, settled, running, replay, overlay;
 let calmFrames, srcImg, srcReady;
@@ -489,7 +488,13 @@ function fluidStep() {
     ys[i] += vys[i];
   }
   for (let k = 0; k < SEP_ITERS; k++) separate();
-  for (let i = 0; i < alive; i++) walls(i);
+  for (let i = 0; i < alive; i++) {
+    walls(i);
+    if (ys[i] > CUP.t + 20 && xs[i] > CUP.l && xs[i] < CUP.r) {
+      const sp = vxs[i] * vxs[i] + vys[i] * vys[i];
+      if (sp < 4) { vxs[i] *= 0.82; vys[i] *= 0.82; }
+    }
+  }
 }
 
 function airborne() {
@@ -497,9 +502,9 @@ function airborne() {
   for (let i = 0; i < alive; i++) {
     if (ys[i] < CUP.t - 4) sky++;
     const sp = vxs[i] * vxs[i] + vys[i] * vys[i];
-    if (sp > 0.35) fast++;
+    if (sp > 1.4) fast++;
   }
-  return sky + (fast > 12 ? fast : 0);
+  return sky + (fast > 8 ? fast : 0);
 }
 
 function markSettled() {
