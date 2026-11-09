@@ -24,6 +24,14 @@ canvas{
 #hint{margin-top:8px;max-width:920px;text-align:center;color:#6a7380;font-size:.8em;line-height:1.45}
 #hint b{color:#9eb0c8}
 .btns{display:flex;gap:8px;margin-top:8px}
+.controls{
+  display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));
+  gap:8px 16px;margin-top:12px;width:min(640px,100%);
+}
+.controls label{display:flex;flex-direction:column;gap:3px;font-size:.74em;color:#8b93a3}
+.controls label span{display:flex;justify-content:space-between;gap:8px}
+.controls strong{color:#7eb6ff;font-variant-numeric:tabular-nums}
+.controls input{width:100%;accent-color:#7eb6ff}
 button{
   background:#242a34;color:#7eb6ff;border:1px solid #5a6470;
   padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:.9em;
@@ -38,6 +46,7 @@ button:hover{background:#323a46}
 <p id="hint">
   <b>Left drag</b> pulls. <b>Right drag</b> pushes.
   <b>Space</b> pauses. <b>Right arrow</b> steps one frame. <b>R</b> resets.
+  The sliders change that view while it runs.
 </p>
 
 <script>
@@ -121,8 +130,6 @@ class FluidSim {
 
     this.gravity = o.gravity;
     this.damping = o.damping;
-    this.h = o.smoothing;
-    this.h2 = this.h * this.h;
     this.targetDensity = o.targetDensity;
     this.pressureMul = o.pressure;
     this.nearPressureMul = o.nearPressure;
@@ -141,21 +148,9 @@ class FluidSim {
     this.seed = o.seed;
     this.title = o.title;
 
-    const pi = Math.PI;
-    this.poly6 = 4 / (pi * Math.pow(this.h, 8));
-    this.spiky3 = 10 / (pi * Math.pow(this.h, 5));
-    this.spiky2 = 6 / (pi * Math.pow(this.h, 4));
-    this.dSpiky3 = 30 / (Math.pow(this.h, 5) * pi);
-    this.dSpiky2 = 12 / (Math.pow(this.h, 4) * pi);
-    this.selfD = this.h2 * this.spiky2;
-    this.selfN = this.h * this.h2 * this.spiky3;
-
-    this.ox = 48;
-    this.oy = 36;
-    this.gw = 96;
-    this.gh = 72;
     this.halfX = this.bounds.x * 0.5;
     this.halfY = this.bounds.y * 0.5;
+    this.setSmoothing(o.smoothing);
     this.obsHx = this.obstacle.x * 0.5;
     this.obsHy = this.obstacle.y * 0.5;
     this.scale = Math.min(this.viewW / (this.bounds.x * 1.08), this.viewH / (this.bounds.y * 1.12));
@@ -187,6 +182,27 @@ class FluidSim {
     this.placeSpawn();
     this.reset();
     this.bindPointer();
+  }
+
+  setSmoothing(h) {
+    this.h = h;
+    this.h2 = h * h;
+    const pi = Math.PI;
+    this.poly6 = 4 / (pi * Math.pow(h, 8));
+    this.spiky3 = 10 / (pi * Math.pow(h, 5));
+    this.spiky2 = 6 / (pi * Math.pow(h, 4));
+    this.dSpiky3 = 30 / (Math.pow(h, 5) * pi);
+    this.dSpiky2 = 12 / (Math.pow(h, 4) * pi);
+    this.selfD = this.h2 * this.spiky2;
+    this.selfN = this.h * this.h2 * this.spiky3;
+    const reachX = Math.ceil(this.halfX / h) + 6;
+    const reachY = Math.ceil(this.halfY / h) + 6;
+    this.ox = reachX;
+    this.oy = reachY;
+    this.gw = reachX * 2 + 1;
+    this.gh = reachY * 2 + 1;
+    this.heads = new Int32Array(this.gw * this.gh);
+    this.heads.fill(-1);
   }
 
   placeSpawn() {
@@ -524,6 +540,49 @@ class FluidSim {
   }
 }
 
+const SLIDERS = [
+  { key: 'gravity', label: 'Gravity', min: -30, max: 8, step: 0.5, digits: 1 },
+  { key: 'pressureMul', label: 'Pressure', min: 0, max: 1500, step: 5, digits: 0 },
+  { key: 'nearPressureMul', label: 'Near pressure', min: 0, max: 40, step: 0.1, digits: 1 },
+  { key: 'targetDensity', label: 'Target density', min: 5, max: 200, step: 1, digits: 0 },
+  { key: 'viscosity', label: 'Viscosity', min: 0, max: 0.4, step: 0.005, digits: 3 },
+  { key: 'damping', label: 'Wall bounce', min: 0, max: 1, step: 0.01, digits: 2 },
+  { key: 'h', label: 'Smoothing', min: 0.15, max: 0.7, step: 0.01, digits: 2, apply: (sim, v) => sim.setSmoothing(v) },
+  { key: 'interactStrength', label: 'Mouse strength', min: 0, max: 220, step: 1, digits: 0 },
+  { key: 'interactRadius', label: 'Mouse radius', min: 0.4, max: 6, step: 0.1, digits: 1 }
+];
+
+function addControls(sim, view) {
+  const box = document.createElement('div');
+  box.className = 'controls';
+  for (let i = 0; i < SLIDERS.length; i++) {
+    const spec = SLIDERS[i];
+    const label = document.createElement('label');
+    const row = document.createElement('span');
+    const name = document.createElement('span');
+    name.textContent = spec.label;
+    const value = document.createElement('strong');
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = spec.min;
+    input.max = spec.max;
+    input.step = spec.step;
+    input.value = sim[spec.key];
+    const show = () => { value.textContent = Number(sim[spec.key]).toFixed(spec.digits); };
+    input.addEventListener('input', () => {
+      const v = Number(input.value);
+      if (spec.apply) spec.apply(sim, v);
+      else sim[spec.key] = v;
+      show();
+    });
+    show();
+    row.append(name, value);
+    label.append(row, input);
+    box.appendChild(label);
+  }
+  view.appendChild(box);
+}
+
 function mountFluid(parent, options) {
   const view = document.createElement('section');
   view.className = 'view';
@@ -551,6 +610,7 @@ function mountFluid(parent, options) {
   sim.hud = { n: strong[0], st: strong[1], ms: strong[2], pause };
   pause.addEventListener('click', () => sim.togglePause());
   reset.addEventListener('click', () => sim.reset());
+  addControls(sim, view);
   sim.syncHud();
   return sim;
 }
