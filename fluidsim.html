@@ -33,11 +33,11 @@ button:hover{background:#323a46}
 </head>
 <body>
 <h1>FLUID SIM</h1>
-<p id="sub">2D SPH from Fluid-Sim · one instance per view</p>
+<p id="sub">2D SPH from Fluid-Sim · Test A</p>
 <div id="views"></div>
 <p id="hint">
-  Each view is its own <b>FluidSim</b>. <b>Left drag</b> pulls, <b>right drag</b> pushes.
-  <b>Space</b> pauses the view under the pointer. <b>Right arrow</b> steps it. <b>R</b> resets it.
+  <b>Left drag</b> pulls. <b>Right drag</b> pushes.
+  <b>Space</b> pauses. <b>Right arrow</b> steps one frame. <b>R</b> resets.
 </p>
 
 <script>
@@ -527,8 +527,6 @@ class FluidSim {
 function mountFluid(parent, options) {
   const view = document.createElement('section');
   view.className = 'view';
-  const title = document.createElement('h2');
-  title.textContent = (options && options.title) || 'Fluid';
   const info = document.createElement('div');
   info.className = 'info';
   info.innerHTML = 'Particles <strong></strong> <span>State <strong></strong></span> <span>Step <strong></strong> ms</span>';
@@ -540,7 +538,12 @@ function mountFluid(parent, options) {
   const reset = document.createElement('button');
   reset.textContent = 'Reset';
   btns.append(pause, reset);
-  view.append(title, info, canvas, btns);
+  if (options && options.title) {
+    const title = document.createElement('h2');
+    title.textContent = options.title;
+    view.append(title);
+  }
+  view.append(info, canvas, btns);
   parent.appendChild(view);
 
   const sim = new FluidSim(canvas, options);
@@ -554,8 +557,7 @@ function mountFluid(parent, options) {
 
 const views = document.getElementById('views');
 const sims = [
-  mountFluid(views, { title: 'Instance A' }),
-  mountFluid(views, { title: 'Instance B' })
+  mountFluid(views)
 ];
 let hoverSim = sims[0];
 
